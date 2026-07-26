@@ -28,7 +28,8 @@ const REASONS: Readonly<Record<ApiActionStatusReason, string>> = {
     source_unavailable: 'Quelle nicht erreichbar',
     local_model_unavailable: 'lokales Modell nicht erreichbar',
     delivery_failed: 'Zustellung fehlgeschlagen',
-    delivered: 'zugestellt'
+    delivered: 'zugestellt',
+    summary_released: 'Zusammenfassung freigegeben'
 };
 
 @Component({
@@ -57,7 +58,7 @@ const REASONS: Readonly<Record<ApiActionStatusReason, string>> = {
                             <th>Ressource</th>
                             <th>Ziel</th>
                             <th>Zweck</th>
-                            <th>Anhänge</th>
+                            <th>Umfang</th>
                             <th>Vorbereitet</th>
                         </tr>
                     </thead>
@@ -72,22 +73,33 @@ const REASONS: Readonly<Record<ApiActionStatusReason, string>> = {
                                 </td>
                                 <td class="ltg-mono">{{ entry.resourceRef }}</td>
                                 <td>
-                                    {{ entry.plan.targetId }}
-                                    @if (entry.plan.dynamicRecipient) {
+                                    @if (entry.plan.kind === 'summarize_resource') {
                                         <span
                                             class="flag"
-                                            matTooltip="Empfänger wurde vom Agenten vorgeschlagen."
+                                            matTooltip="Redigierte Zusammenfassung zur Abholung durch den Agenten. Das Dokument selbst blieb hier."
                                         >
                                             <ltg-icon name="alert" [size]="11" />
-                                            frei
+                                            Agent
+                                        </span>
+                                        <span class="ltg-muted recipient">Zusammenfassung</span>
+                                    } @else {
+                                        {{ entry.plan.targetId }}
+                                        @if (entry.plan.dynamicRecipient) {
+                                            <span
+                                                class="flag"
+                                                matTooltip="Empfänger wurde vom Agenten vorgeschlagen."
+                                            >
+                                                <ltg-icon name="alert" [size]="11" />
+                                                frei
+                                            </span>
+                                        }
+                                        <span class="ltg-mono ltg-muted recipient">
+                                            {{ entry.plan.recipientDisplay }}
                                         </span>
                                     }
-                                    <span class="ltg-mono ltg-muted recipient">
-                                        {{ entry.plan.recipientDisplay }}
-                                    </span>
                                 </td>
                                 <td class="purpose">{{ entry.purpose }}</td>
-                                <td class="nowrap">{{ attachments(entry) }}</td>
+                                <td class="nowrap">{{ payload(entry) }}</td>
                                 <td
                                     class="nowrap"
                                     [matTooltip]="absolute(entry.createdAt)"
@@ -193,7 +205,11 @@ export class HistoryPage {
         return entry.statusReason ? REASONS[entry.statusReason] : '';
     }
 
-    protected attachments(entry: ApiHistoryEntry): string {
+    /** What the action would have carried: files, or characters of redacted text. */
+    protected payload(entry: ApiHistoryEntry): string {
+        if (entry.plan.kind === 'summarize_resource') {
+            return `${entry.plan.summaryChars} Zeichen Text`;
+        }
         const files = entry.plan.attachments;
         if (files.length === 0) {
             return 'keine';

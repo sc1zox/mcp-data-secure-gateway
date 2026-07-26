@@ -13,6 +13,7 @@ import { EmptyState } from '../shared/empty-state';
 import { Icon } from '../shared/icon';
 import { ApprovalDetail, type ApprovalDecision } from './approval-detail';
 import { ApproveDialog, type ApproveDialogData } from './approve-dialog';
+import { SummaryDetail } from './summary-detail';
 
 /**
  * Pending approvals as a list beside a detail view.
@@ -27,7 +28,7 @@ import { ApproveDialog, type ApproveDialogData } from './approve-dialog';
 @Component({
     selector: 'ltg-approvals-page',
     changeDetection: ChangeDetectionStrategy.OnPush,
-    imports: [ApprovalDetail, CountdownLabel, EmptyState, Icon],
+    imports: [ApprovalDetail, CountdownLabel, EmptyState, Icon, SummaryDetail],
     template: `
         @if (actions().length === 0) {
             <ltg-empty
@@ -50,13 +51,20 @@ import { ApproveDialog, type ApproveDialogData } from './approve-dialog';
                             <span class="row-main">
                                 <span class="row-title">{{ item.resource.safeLabel }}</span>
                                 <span class="row-target">
-                                    @if (item.target.dynamicRecipient) {
+                                    @if (item.kind === 'summarize_resource') {
                                         <span class="flag">
                                             <ltg-icon name="alert" [size]="12" />
-                                            freier Empfänger
+                                            Text an den Agenten
                                         </span>
+                                    } @else {
+                                        @if (item.target.dynamicRecipient) {
+                                            <span class="flag">
+                                                <ltg-icon name="alert" [size]="12" />
+                                                freier Empfänger
+                                            </span>
+                                        }
+                                        {{ item.target.label }}
                                     }
-                                    {{ item.target.label }}
                                 </span>
                                 <ltg-countdown [expiresAt]="item.expiresAt" />
                             </span>
@@ -67,11 +75,19 @@ import { ApproveDialog, type ApproveDialogData } from './approve-dialog';
 
                 <div class="pane">
                     @if (selected(); as action) {
-                        <ltg-approval-detail
-                            [action]="action"
-                            [busy]="busy()"
-                            (decide)="decide(action, $event)"
-                        />
+                        @if (action.kind === 'summarize_resource') {
+                            <ltg-summary-detail
+                                [action]="action"
+                                [busy]="busy()"
+                                (decide)="decide(action, $event)"
+                            />
+                        } @else {
+                            <ltg-approval-detail
+                                [action]="action"
+                                [busy]="busy()"
+                                (decide)="decide(action, $event)"
+                            />
+                        }
                     } @else {
                         <ltg-empty
                             icon="chevron"
@@ -271,11 +287,19 @@ export class ApprovalsPage {
             switch (decision) {
                 case 'approve':
                     await this.api.approve(action.actionId, action.bindingHash);
-                    this.notify.ok('Freigegeben. Die Übertragung läuft.');
+                    this.notify.ok(
+                        action.kind === 'summarize_resource'
+                            ? 'Freigegeben. Der Agent kann den Text jetzt abholen.'
+                            : 'Freigegeben. Die Übertragung läuft.'
+                    );
                     break;
                 case 'reject':
                     await this.api.reject(action.actionId);
-                    this.notify.ok('Aktion abgelehnt.');
+                    this.notify.ok(
+                        action.kind === 'summarize_resource'
+                            ? 'Abgelehnt. Der Text bleibt hier.'
+                            : 'Aktion abgelehnt.'
+                    );
                     break;
                 case 'discard':
                     await this.api.discard(action.actionId);

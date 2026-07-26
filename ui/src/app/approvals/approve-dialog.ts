@@ -16,10 +16,13 @@ import { Icon } from '../shared/icon';
  * thing in the dialog, in a monospace face so that a swapped character in a
  * lookalike domain is visible rather than merely present.
  *
- * For a dynamic recipient the confirm button additionally waits on an explicit
- * acknowledgement. That is not ceremony: for those targets the address was chosen
- * by the remote agent rather than by local configuration, so it is the single
- * field on screen that an attacker had any influence over.
+ * Both kinds of action can require an explicit acknowledgement before the
+ * confirm button unlocks, and in both cases it guards the same thing: the one
+ * piece of the payload that neither the user nor the local configuration wrote.
+ * For a dynamic recipient that is the address the remote agent proposed. For a
+ * summary it is the entire text, written by a model from a document the user is
+ * not currently looking at — so the dialog repeats it in full rather than
+ * summarising the summary, and asks the user to confirm having read it.
  */
 export interface ApproveDialogData {
     action: ApiActionView;
@@ -30,72 +33,114 @@ export interface ApproveDialogData {
     changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [FormsModule, MatButtonModule, MatCheckboxModule, MatDialogModule, Icon],
     template: `
-        <h2 mat-dialog-title>Übertragung freigeben?</h2>
+        <h2 mat-dialog-title>
+            {{ summary ? 'Text an den Agenten freigeben?' : 'Übertragung freigeben?' }}
+        </h2>
 
         <mat-dialog-content>
-            @if (action.target.dynamicRecipient) {
+            @if (summary; as plan) {
                 <div class="alarm">
                     <ltg-icon name="alert" [size]="18" />
                     <div>
-                        <p class="alarm-head">Empfänger wurde vom Agenten vorgeschlagen</p>
+                        <p class="alarm-head">Diese Zeichen gehen an den Cloud-Agenten</p>
                         <p class="alarm-body">
-                            Diese Adresse steht nicht in deiner lokalen Konfiguration. Prüfe sie
-                            zeichenweise auf Tippfehler und ähnlich aussehende Domains.
+                            Danach ist der Text dort und lässt sich nicht zurückholen. Das
+                            Originaldokument bleibt hier.
                         </p>
                     </div>
                 </div>
-                <p class="address">{{ action.target.recipientDisplay }}</p>
-            }
+                <pre class="summary-text">{{ plan.text }}</pre>
 
-            <dl class="facts">
-                <dt>Ressource</dt>
-                <dd>{{ action.resource.title }}</dd>
-
-                <dt>Ziel</dt>
-                <dd>
-                    {{ action.target.label }}
-                    @if (!action.target.dynamicRecipient) {
-                        <span class="ltg-mono"> → {{ action.target.recipientDisplay }}</span>
-                    }
-                </dd>
-
-                <dt>Betreff</dt>
-                <dd>
-                    {{ action.egress.subject || '– kein Betreff –' }}
-                    @if (action.egress.authoredByAgent.subject) {
-                        <span class="by-agent">vom Agenten</span>
-                    }
-                </dd>
-
-                @if (action.egress.authoredByAgent.body) {
-                    <dt>Nachrichtentext</dt>
-                    <dd>
-                        <span class="by-agent">vom Agenten</span>
-                        <span class="agent-hint">
-                            geht wörtlich hinaus, ohne Zusatz des Gateways
-                        </span>
-                    </dd>
+                @if (plan.residuals.length > 0) {
+                    <p class="residual">
+                        Offen aus der lokalen Mustersuche:
+                        @for (finding of plan.residuals; track finding.sample) {
+                            <span class="residual-item">{{ finding.kind }}</span>
+                        }
+                    </p>
                 }
 
-                <dt>Anhänge</dt>
-                <dd>
-                    {{ action.egress.attachments.length }} ·
-                    {{ totalBytes() }}
-                    @for (attachment of action.egress.attachments; track attachment.sha256) {
-                        <span class="file">{{ attachment.filename }}</span>
-                    }
-                </dd>
-            </dl>
+                <dl class="facts">
+                    <dt>Ressource</dt>
+                    <dd>{{ action.resource.title }}</dd>
 
-            <p class="scope">
-                Die Freigabe gilt ausschließlich für genau diese Kombination aus Ressource, Ziel
-                und Inhalt. Ändert sich davon etwas, verfällt sie.
-            </p>
+                    <dt>Umfang</dt>
+                    <dd>{{ plan.chars }} Zeichen · verfasst von {{ plan.model }}</dd>
+                </dl>
 
-            @if (action.target.dynamicRecipient) {
+                <p class="scope">
+                    Die Freigabe gilt für genau diesen Text. Ändert sich daran etwas, verfällt sie.
+                </p>
+
                 <mat-checkbox [(ngModel)]="acknowledged">
-                    Ich habe die Empfängeradresse geprüft.
+                    Ich habe den Text gelesen und er enthält keine Angaben, die den Rechner nicht
+                    verlassen dürfen.
                 </mat-checkbox>
+            } @else if (action.kind === 'send_resource') {
+                @if (action.target.dynamicRecipient) {
+                    <div class="alarm">
+                        <ltg-icon name="alert" [size]="18" />
+                        <div>
+                            <p class="alarm-head">Empfänger wurde vom Agenten vorgeschlagen</p>
+                            <p class="alarm-body">
+                                Diese Adresse steht nicht in deiner lokalen Konfiguration. Prüfe
+                                sie zeichenweise auf Tippfehler und ähnlich aussehende Domains.
+                            </p>
+                        </div>
+                    </div>
+                    <p class="address">{{ action.target.recipientDisplay }}</p>
+                }
+
+                <dl class="facts">
+                    <dt>Ressource</dt>
+                    <dd>{{ action.resource.title }}</dd>
+
+                    <dt>Ziel</dt>
+                    <dd>
+                        {{ action.target.label }}
+                        @if (!action.target.dynamicRecipient) {
+                            <span class="ltg-mono"> → {{ action.target.recipientDisplay }}</span>
+                        }
+                    </dd>
+
+                    <dt>Betreff</dt>
+                    <dd>
+                        {{ action.egress.subject || '– kein Betreff –' }}
+                        @if (action.egress.authoredByAgent.subject) {
+                            <span class="by-agent">vom Agenten</span>
+                        }
+                    </dd>
+
+                    @if (action.egress.authoredByAgent.body) {
+                        <dt>Nachrichtentext</dt>
+                        <dd>
+                            <span class="by-agent">vom Agenten</span>
+                            <span class="agent-hint">
+                                geht wörtlich hinaus, ohne Zusatz des Gateways
+                            </span>
+                        </dd>
+                    }
+
+                    <dt>Anhänge</dt>
+                    <dd>
+                        {{ action.egress.attachments.length }} ·
+                        {{ totalBytes() }}
+                        @for (attachment of action.egress.attachments; track attachment.sha256) {
+                            <span class="file">{{ attachment.filename }}</span>
+                        }
+                    </dd>
+                </dl>
+
+                <p class="scope">
+                    Die Freigabe gilt ausschließlich für genau diese Kombination aus Ressource,
+                    Ziel und Inhalt. Ändert sich davon etwas, verfällt sie.
+                </p>
+
+                @if (action.target.dynamicRecipient) {
+                    <mat-checkbox [(ngModel)]="acknowledged">
+                        Ich habe die Empfängeradresse geprüft.
+                    </mat-checkbox>
+                }
             }
         </mat-dialog-content>
 
@@ -151,6 +196,41 @@ export interface ApproveDialogData {
             letter-spacing: 0.02em;
             overflow-wrap: anywhere;
             text-align: center;
+        }
+
+        /*
+         * The text is repeated here in full rather than referred back to. The
+         * detail view is behind a modal at this point, and "you already read it"
+         * is exactly the assumption this dialog exists to stop relying on.
+         */
+        .summary-text {
+            margin: 0;
+            padding: 0.9rem 1rem;
+            border-radius: var(--ltg-radius-sm);
+            border: 1px solid var(--ltg-alarm);
+            background: var(--ltg-alarm-surface);
+            color: var(--mat-sys-on-surface);
+            font-family: var(--ltg-mono);
+            font-size: 0.82rem;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            max-height: 22rem;
+            overflow-y: auto;
+        }
+
+        .residual {
+            margin: 0;
+            font-size: 0.82rem;
+            color: var(--ltg-alarm);
+            font-weight: 600;
+        }
+
+        .residual-item {
+            margin-left: 0.35rem;
+            padding: 0.05rem 0.4rem;
+            border-radius: 999px;
+            background: var(--ltg-alarm-surface);
         }
 
         .facts {
@@ -211,9 +291,23 @@ export class ApproveDialog {
     protected readonly action = this.data.action;
     protected readonly acknowledged = signal(false);
 
-    protected readonly totalBytes = computed(() => formatBytes(this.action.egress.totalBytes));
+    /** The summary plan, or `undefined` for a transfer. Drives the whole layout. */
+    protected readonly summary =
+        this.action.kind === 'summarize_resource' ? this.action.summary : undefined;
 
-    protected readonly canConfirm = computed(
-        () => !this.action.target.dynamicRecipient || this.acknowledged()
+    protected readonly totalBytes = computed(() =>
+        formatBytes(this.action.kind === 'send_resource' ? this.action.egress.totalBytes : 0)
     );
+
+    /**
+     * Both acknowledgements guard the same thing: a part of the payload that
+     * came from the remote agent or from a model rather than from the user or
+     * the local configuration.
+     */
+    protected readonly canConfirm = computed(() => {
+        if (this.action.kind === 'summarize_resource') {
+            return this.acknowledged();
+        }
+        return !this.action.target.dynamicRecipient || this.acknowledged();
+    });
 }

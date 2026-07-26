@@ -5,7 +5,14 @@ import { parseConfig, type GatewayConfig } from '../src/config.js';
 import { EgressGuard } from '../src/core/egress.js';
 import { Orchestrator, type SourceLookup, type TargetLookup } from '../src/core/orchestrator.js';
 import type { InternalResource, JudgementRecord, TargetDescriptor } from '../src/core/types.js';
-import type { Judge, EgressAssessment, SelectionOutcome } from '../src/judge/judge.js';
+import type {
+    Judge,
+    EgressAssessment,
+    EgressEvidence,
+    SelectionOutcome,
+    SummaryDraft
+} from '../src/judge/judge.js';
+import { placeholdersIn, sanitiseSummary } from '../src/core/egress.js';
 import { AuditLog } from '../src/store/auditLog.js';
 import { ActionStore } from '../src/store/actionStore.js';
 import { ReferenceStore } from '../src/store/referenceStore.js';
@@ -47,8 +54,11 @@ export class FakeSource implements PrivateSource {
     available = true;
     searchCalls: string[] = [];
     originalFetches: string[] = [];
+    textFetches: string[] = [];
     bytes = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     failSearch = false;
+    /** Set to undefined to model a resource with no extractable text. */
+    text: string | undefined = 'Lebenslauf von Max Mustermann, Musterstraße 1, geboren 1985.';
 
     constructor(public resources: InternalResource[] = [makeResource()]) {}
 
@@ -73,6 +83,11 @@ export class FakeSource implements PrivateSource {
     async fetchOriginal(nativeId: string): Promise<SourceFile> {
         this.originalFetches.push(nativeId);
         return { filename: 'lebenslauf.pdf', mimeType: 'application/pdf', bytes: this.bytes };
+    }
+
+    async fetchText(nativeId: string): Promise<string | undefined> {
+        this.textFetches.push(nativeId);
+        return this.text;
     }
 }
 
@@ -127,7 +142,15 @@ export type JudgeBehaviour =
  * Stands in for the local model. Casting to `Judge` keeps the orchestrator's real
  * signature; only the two methods it calls are needed.
  */
-export function makeFakeJudge(behaviour: JudgeBehaviour, egressOverrides: Partial<EgressAssessment> = {}): Judge {
+export function makeFakeJudge(
+    behaviour: JudgeBehaviour,
+    egressOverrides: Partial<EgressAssessment> = {},
+    summaryText = 'Es handelt sich um einen Lebenslauf von [REDACTED_NAME] mit Stationen bei [REDACTED_ORG].',
+    /** Fails only the summarising call, so search and reference minting still work. */
+    summaryError?: Error,
+    /** Receives what the orchestrator handed the judge to read, in call order. */
+    evidenceSink: EgressEvidence[] = []
+): Judge {
     const judgement = (sensitivity: 'low' | 'medium' | 'high' = 'low'): JudgementRecord => ({
         model: 'test-model',
         confidence: 0.9,
@@ -164,7 +187,11 @@ export function makeFakeJudge(behaviour: JudgeBehaviour, egressOverrides: Partia
                 judgement: judgement(behaviour.sensitivity)
             };
         },
-        async assessEgress(): Promise<EgressAssessment> {
+        async assessEgress(
+            _resource: InternalResource,
+            evidence: EgressEvidence
+        ): Promise<EgressAssessment> {
+            evidenceSink.push(evidence);
             if (behaviour.kind === 'throw') {
                 throw behaviour.error;
             }
@@ -175,6 +202,19 @@ export function makeFakeJudge(behaviour: JudgeBehaviour, egressOverrides: Partia
                 judgement: judgement(),
                 ...egressOverrides
             };
+        },
+        // Mirrors the real judge: the text is normalised and the placeholders are
+        // derived from it rather than declared, so a test that hands back a bad
+        // summary gets it treated exactly as a bad model answer would be.
+        async summariseResource(): Promise<SummaryDraft> {
+            if (summaryError) {
+                throw summaryError;
+            }
+            if (behaviour.kind === 'throw') {
+                throw behaviour.error;
+            }
+            const summary = sanitiseSummary(summaryText);
+            return { summary, redactions: placeholdersIn(summary), judgement: judgement() };
         }
     } as unknown as Judge;
 }
@@ -220,6 +260,8 @@ export interface Harness {
     actions: ActionStore;
     selections: SelectionStore;
     guard: EgressGuard;
+    /** What the orchestrator gave the judge to read, per `assessEgress` call. */
+    egressEvidence: EgressEvidence[];
     dataDir: string;
     cleanup(): Promise<void>;
 }
@@ -230,6 +272,10 @@ export async function makeHarness(options: {
     config?: Record<string, unknown>;
     egressOverrides?: Partial<EgressAssessment>;
     targetDescriptor?: Partial<TargetDescriptor>;
+    /** What the stand-in local model returns from `summariseResource`. */
+    summaryText?: string;
+    /** Makes only the summarising call fail; search and judgement still work. */
+    summaryError?: Error;
 } = {}): Promise<Harness> {
     const dataDir = await mkdtemp(join(tmpdir(), 'ltg-test-'));
     const config = makeConfig({ ...(options.config ?? {}), dataDir });
@@ -260,11 +306,18 @@ export async function makeHarness(options: {
     guard.registerSecret('sehr-geheimes-passwort');
     guard.registerSecret('ich@example.org');
 
+    const egressEvidence: EgressEvidence[] = [];
     const orchestrator = new Orchestrator(
         config,
         sources,
         targets,
-        makeFakeJudge(options.judge ?? { kind: 'select' }, options.egressOverrides),
+        makeFakeJudge(
+            options.judge ?? { kind: 'select' },
+            options.egressOverrides,
+            options.summaryText,
+            options.summaryError,
+            egressEvidence
+        ),
         references,
         actions,
         selections,
@@ -281,6 +334,7 @@ export async function makeHarness(options: {
         actions,
         selections,
         guard,
+        egressEvidence,
         dataDir,
         cleanup: async () => {
             await rm(dataDir, { recursive: true, force: true });

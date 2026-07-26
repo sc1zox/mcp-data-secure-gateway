@@ -1,5 +1,5 @@
 import type { GatewayConfig } from '../config.js';
-import { Judge } from '../judge/judge.js';
+import { Judge, type EgressEvidence } from '../judge/judge.js';
 import { LocalModelResponseError, LocalModelUnavailableError } from '../judge/ollamaClient.js';
 import type { AuditLog } from '../store/auditLog.js';
 import { ActionStore } from '../store/actionStore.js';
@@ -12,16 +12,21 @@ import { newActionId, newQueryId, newResourceRef, newSelectionId } from '../util
 import { createLogger, describeError, type Logger } from '../util/log.js';
 import {
     EgressGuard,
+    EgressViolationError,
+    findResiduals,
     note,
     publicActionState,
     publicResourceRef,
+    publicSummary,
     publicTarget,
     sanitiseLabel,
     type PublicActionState,
     type PublicFindResult,
-    type PublicTarget
+    type PublicSummary,
+    type PublicTarget,
+    type ResidualFinding
 } from './egress.js';
-import { TERMINAL_ACTION_STATUSES } from './types.js';
+import { TERMINAL_ACTION_STATUSES, targetIdOf } from './types.js';
 import type {
     ActionPlan,
     ActionRecord,
@@ -29,9 +34,12 @@ import type {
     JudgementRecord,
     LocalResourceSummary,
     PlannedAttachment,
+    RedactionPlaceholder,
     ResourceRecord,
     SelectionCandidate,
     SelectionRequest,
+    SendResourcePlan,
+    SummariseResourcePlan,
     TargetDescriptor
 } from './types.js';
 
@@ -43,6 +51,8 @@ const MAX_QUERY_CHARS = 500;
 const MAX_SUBJECT_CHARS = 200;
 /** An agent-supplied message body. Generous, because this may be a real letter. */
 const MAX_BODY_CHARS = 10000;
+/** What the agent may say it is looking for in a summary. A hint, not a brief. */
+const MAX_FOCUS_CHARS = 300;
 
 /** How long `awaitActionDecision` waits by default, and at most. */
 const DEFAULT_DECISION_WAIT_SECONDS = 60;
@@ -88,8 +98,19 @@ export interface PrepareActionInput {
     recipient?: string;
 }
 
-/** Everything the local approval view needs. Never sent to Hermes. */
-export interface LocalActionView {
+export interface SummarizeResourceInput {
+    reference: string;
+    purpose: string;
+    /**
+     * What the agent hopes to learn. Reaches the local model as a quoted wish,
+     * never as an instruction, and can only narrow what the summary talks about
+     * — it cannot loosen the redaction rules, which are in the system prompt.
+     */
+    focus?: string;
+}
+
+/** What every pending action shows, whatever it would do. Never sent to Hermes. */
+export interface LocalActionViewBase {
     actionId: string;
     status: ActionRecord['status'];
     bindingHash: string;
@@ -98,6 +119,12 @@ export interface LocalActionView {
     expiresAt: string;
     /** `webUrl` links into the source's own interface; local UI only. */
     resource: LocalResourceSummary & { ref: string; safeLabel: string; webUrl?: string };
+    judgement: JudgementRecord;
+}
+
+/** A transfer of the original document to a configured target. */
+export interface LocalSendActionView extends LocalActionViewBase {
+    kind: 'send_resource';
     target: { id: string; label: string; recipientDisplay: string; purpose: string; dynamicRecipient: boolean };
     egress: {
         subject?: string;
@@ -107,10 +134,39 @@ export interface LocalActionView {
         /** Which of subject and body the cloud agent wrote rather than the gateway. */
         authoredByAgent: { subject: boolean; body: boolean };
     };
-    judgement: JudgementRecord;
     /** True when the staged bytes are no longer in memory (e.g. after a restart). */
     needsRefetch: boolean;
 }
+
+/**
+ * A redacted summary waiting to be released to the agent.
+ *
+ * There is no target block here and no attachment list, because there is
+ * nothing to attach and nowhere else to send: the whole payload is `text`, and
+ * the screen's one job is to let the user read those exact characters.
+ */
+export interface LocalSummaryActionView extends LocalActionViewBase {
+    kind: 'summarize_resource';
+    summary: {
+        /** Exactly what the agent would receive. */
+        text: string;
+        sha256: string;
+        chars: number;
+        /** Placeholder categories present in the text. */
+        redactions: RedactionPlaceholder[];
+        /**
+         * Things in the text that still look like they should have been
+         * removed. Recomputed on every view rather than stored, so sharpening
+         * the patterns applies to actions that already exist.
+         */
+        residuals: ResidualFinding[];
+        model: string;
+        /** What the agent said it was looking for, if anything. */
+        focus?: string;
+    };
+}
+
+export type LocalActionView = LocalSendActionView | LocalSummaryActionView;
 
 export interface LocalSelectionView {
     selectionId: string;
@@ -369,59 +425,11 @@ export class Orchestrator {
             return this.rejectRequest(correlationId, 'recipient_not_allowed', { targetId: input.target });
         }
 
-        const record = this.references.resolve(input.reference);
-        if (!record) {
-            const known = this.references.all().some((entry) => entry.ref === input.reference);
-            return this.rejectRequest(
-                correlationId,
-                known ? 'reference_expired' : 'reference_unknown',
-                { resourceRef: input.reference }
-            );
+        const resolved = await this.resolveForEgress(correlationId, input.reference, purpose);
+        if ('refusal' in resolved) {
+            return resolved.refusal;
         }
-        if (!this.references.resolveForPurpose(input.reference, purpose)) {
-            return this.rejectRequest(correlationId, 'purpose_mismatch', {
-                resourceRef: input.reference,
-                mintedFor: record.purpose,
-                requestedFor: purpose
-            });
-        }
-
-        const source = this.sources.get(record.locator.sourceId);
-        if (!source || !source.isAvailable()) {
-            return this.rejectRequest(correlationId, 'source_unavailable', {
-                sourceId: record.locator.sourceId
-            });
-        }
-
-        // The resource must still be in the state the reference was minted for.
-        // Otherwise the user would approve a description of something that has
-        // since changed.
-        let current: InternalResource | undefined;
-        try {
-            current = await source.fetchMetadata(record.locator.nativeId);
-        } catch (error) {
-            await this.audit.record('source_unavailable', {
-                correlationId,
-                sourceId: source.id,
-                detail: { error: describeError(error) }
-            });
-            return this.rejectRequest(correlationId, 'source_unavailable', { sourceId: source.id });
-        }
-        if (!current) {
-            return this.rejectRequest(correlationId, 'reference_unknown', {
-                resourceRef: input.reference,
-                reason: 'resource_gone'
-            });
-        }
-        const currentStateHash = resourceStateHash(current);
-        if (!safeEqual(currentStateHash, record.stateHash)) {
-            await this.audit.record('action_binding_mismatch', {
-                correlationId,
-                resourceRef: record.ref,
-                detail: { expected: record.stateHash, actual: currentStateHash, phase: 'prepare' }
-            });
-            return this.rejectRequest(correlationId, 'resource_changed', { resourceRef: record.ref });
-        }
+        const { record, source, current, currentStateHash } = resolved;
 
         // Fetch the original now so the approval view can state the exact size and
         // digest of what would leave. This is a local read, not a transfer.
@@ -446,10 +454,18 @@ export class Orchestrator {
             });
         }
 
+        // Read the document itself before asking what it is. The bytes are
+        // already in hand at this point, but bytes are not something a language
+        // model can weigh — this is the text, and it is what turns the
+        // assessment below from a statement about a filename into one about a
+        // file.
+        const evidence = await this.readEvidence(source, record.locator.nativeId, current, correlationId);
+
         let assessment;
         try {
             assessment = await this.judge.assessEgress(
                 current,
+                evidence,
                 purpose,
                 descriptor.label,
                 descriptor.purpose,
@@ -470,7 +486,7 @@ export class Orchestrator {
             byteSize: file.bytes.byteLength,
             sha256: sha256Bytes(file.bytes)
         };
-        const plan: ActionPlan = {
+        const plan: SendResourcePlan = {
             kind: 'send_resource',
             targetId: descriptor.id,
             // Dynamic case: show the exact address that will be used, unmasked,
@@ -498,7 +514,7 @@ export class Orchestrator {
             resourceStateHash: currentStateHash,
             purpose,
             plan,
-            bindingHash: computeBindingHash(record.ref, currentStateHash, descriptor.id, plan),
+            bindingHash: computeBindingHash(record.ref, currentStateHash, plan),
             judgement: assessment.judgement,
             status: 'awaiting_local_approval',
             statusReason: 'awaiting_user',
@@ -519,6 +535,201 @@ export class Orchestrator {
             correlationId,
             actionId,
             detail: { tool: 'prepare_action', status: payload.status }
+        });
+        return payload;
+    }
+
+    /**
+     * Has the local model write a redacted summary of a referenced document, and
+     * parks it for local approval.
+     *
+     * The shape of the answer is the point: this call does not return a summary.
+     * It returns an action id and `awaiting_local_approval`, exactly like
+     * preparing a transfer does, because a summary is a transfer — of a small
+     * amount of text instead of a file, to the agent instead of to a mailbox,
+     * and therefore subject to the same rule that nothing crosses the boundary
+     * without a person having read it first (invariant 7).
+     *
+     * The document itself never goes anywhere. It is read here, handed to a
+     * model running on this machine, and dropped; what survives the call is the
+     * model's redacted prose, which is what the user will be asked about.
+     */
+    async summarizeResource(input: SummarizeResourceInput): Promise<PublicActionState> {
+        const correlationId = newQueryId();
+        const purpose = clamp(input.purpose, MAX_PURPOSE_CHARS);
+        const focus = emptyToUndefined(clamp(input.focus, MAX_FOCUS_CHARS));
+
+        await this.audit.record('hermes_request', {
+            correlationId,
+            resourceRef: input.reference,
+            detail: { tool: 'summarize_resource', purpose, focus: focus ?? null }
+        });
+
+        const resolved = await this.resolveForEgress(correlationId, input.reference, purpose);
+        if ('refusal' in resolved) {
+            return resolved.refusal;
+        }
+        const { record, source, current, currentStateHash } = resolved;
+
+        // No text, no summary. Summarising the metadata instead would produce
+        // something that reads like a summary of the document while never having
+        // seen it, which is worse than refusing.
+        let text: string | undefined;
+        try {
+            text = await source.fetchText?.(record.locator.nativeId);
+        } catch (error) {
+            await this.audit.record('source_unavailable', {
+                correlationId,
+                sourceId: source.id,
+                resourceRef: record.ref,
+                detail: { error: describeError(error), phase: 'fetch_text' }
+            });
+            return this.rejectRequest(correlationId, 'source_unavailable', { sourceId: source.id });
+        }
+        if (!text || text.trim().length === 0) {
+            return this.rejectRequest(correlationId, 'summary_no_text', { resourceRef: record.ref });
+        }
+
+        let draft;
+        try {
+            draft = await this.judge.summariseResource(current, text, purpose, focus, correlationId);
+        } catch (error) {
+            const failure = this.localModelFailure(error);
+            await this.audit.record('hermes_response', {
+                correlationId,
+                detail: { tool: 'summarize_resource', outcome: 'local_model_unavailable' }
+            });
+            return this.syntheticActionState('local_model_unavailable', failure.note);
+        }
+
+        if (draft.summary.length === 0) {
+            return this.rejectRequest(correlationId, 'summary_unusable', {
+                resourceRef: record.ref,
+                reason: 'empty_summary'
+            });
+        }
+        // The guard normally runs on a finished public payload. It runs here as
+        // well, before the text is stored, because a summary carrying a URL, a
+        // path or a configured secret must not reach the approval view at all —
+        // asking a user to sign off on something the boundary would refuse
+        // anyway only invites them to try.
+        try {
+            this.guard.assertClean({ summary: draft.summary }, 'summarize_resource');
+        } catch (error) {
+            if (!(error instanceof EgressViolationError)) {
+                throw error;
+            }
+            await this.audit.record('invariant_blocked', {
+                correlationId,
+                resourceRef: record.ref,
+                detail: { invariant: 'no_raw_data', phase: 'summary_draft', error: describeError(error) }
+            });
+            return this.rejectRequest(correlationId, 'summary_unusable', {
+                resourceRef: record.ref,
+                reason: 'guard_violation'
+            });
+        }
+
+        const plan: SummariseResourcePlan = {
+            kind: 'summarize_resource',
+            summary: draft.summary,
+            summarySha256: sha256Text(draft.summary),
+            redactions: draft.redactions,
+            model: draft.judgement.model,
+            focus
+        };
+
+        const now = new Date();
+        const actionId = newActionId();
+        const action: ActionRecord = {
+            actionId,
+            resourceRef: record.ref,
+            resourceStateHash: currentStateHash,
+            purpose,
+            plan,
+            bindingHash: computeBindingHash(record.ref, currentStateHash, plan),
+            judgement: draft.judgement,
+            status: 'awaiting_local_approval',
+            statusReason: 'awaiting_user',
+            createdAt: now.toISOString(),
+            expiresAt: new Date(now.getTime() + this.config.approval.actionTtlSeconds * 1000).toISOString()
+        };
+        await this.actions.create(action);
+        this.log.info('Zusammenfassung vorbereitet, wartet auf lokale Freigabe', {
+            actionId,
+            chars: plan.summary.length
+        });
+
+        const payload = publicActionState(action);
+        this.guard.assertClean(payload, 'summarize_resource');
+        await this.audit.record('hermes_response', {
+            correlationId,
+            actionId,
+            detail: { tool: 'summarize_resource', status: payload.status }
+        });
+        return payload;
+    }
+
+    /**
+     * Hands over a summary the user released.
+     *
+     * This is the only way a summary leaves the machine, and it is a read of
+     * something already decided rather than a decision of its own: the text
+     * comes out when — and only when — the action reached `completed`, which
+     * `approveAction` is the sole path to. Any other status answers with the
+     * status and no text.
+     */
+    async getSummary(actionId: string): Promise<PublicSummary> {
+        const action = this.actions.get(actionId);
+        if (!action) {
+            const unknown: PublicSummary = {
+                action_id: actionId,
+                status: 'failed',
+                note: note('action_unknown')
+            };
+            this.guard.assertClean(unknown, 'get_summary');
+            return unknown;
+        }
+        if (action.plan.kind !== 'summarize_resource') {
+            // A transfer has no text to collect, and saying so must not describe
+            // what that transfer was about.
+            const wrongKind: PublicSummary = {
+                action_id: actionId,
+                status: action.status,
+                note: note('summary_not_released')
+            };
+            this.guard.assertClean(wrongKind, 'get_summary');
+            return wrongKind;
+        }
+
+        const payload = publicSummary(action);
+        // The digest is re-checked at the boundary for the same reason the
+        // attachment digest is: the approved thing and the sent thing have to be
+        // the same thing, even if the store was edited in between.
+        if (payload.summary !== undefined && !safeEqual(sha256Text(payload.summary), action.plan.summarySha256)) {
+            await this.audit.record('invariant_blocked', {
+                actionId,
+                detail: { invariant: 'action_immutability', phase: 'get_summary' }
+            });
+            const mismatch: PublicSummary = {
+                action_id: actionId,
+                status: 'failed',
+                note: note('summary_not_released')
+            };
+            this.guard.assertClean(mismatch, 'get_summary');
+            return mismatch;
+        }
+
+        this.guard.assertClean(payload, 'get_summary');
+        await this.audit.record('hermes_response', {
+            correlationId: actionId,
+            actionId,
+            detail: {
+                tool: 'get_summary',
+                status: payload.status,
+                released: payload.summary !== undefined,
+                summarySha256: payload.summary !== undefined ? action.plan.summarySha256 : undefined
+            }
         });
         return payload;
     }
@@ -636,7 +847,6 @@ export class Orchestrator {
         const recomputed = computeBindingHash(
             action.resourceRef,
             action.resourceStateHash,
-            action.plan.targetId,
             action.plan
         );
         if (!safeEqual(recomputed, action.bindingHash)) {
@@ -653,7 +863,7 @@ export class Orchestrator {
         await this.audit.record('action_approved', {
             actionId,
             resourceRef: action.resourceRef,
-            targetId: action.plan.targetId,
+            targetId: targetIdOf(action.plan),
             detail: { bindingHash: action.bindingHash, purpose: action.purpose }
         });
         const executing = await this.actions.transition(actionId, 'executing', {
@@ -683,7 +893,7 @@ export class Orchestrator {
         await this.audit.record(discard ? 'action_discarded' : 'action_rejected', {
             actionId,
             resourceRef: action.resourceRef,
-            targetId: action.plan.targetId
+            targetId: targetIdOf(action.plan)
         });
         return this.toLocalActionView(updated);
     }
@@ -776,7 +986,7 @@ export class Orchestrator {
         await this.audit.record('action_parked', {
             actionId,
             resourceRef: action.resourceRef,
-            targetId: action.plan.targetId,
+            targetId: targetIdOf(action.plan),
             detail: { query }
         });
 
@@ -833,6 +1043,148 @@ export class Orchestrator {
 
     // ------------------------------------------------------------------ internals
 
+    /**
+     * The checks every action has to pass before anything is built from a
+     * reference: that it exists, that it was minted for this purpose, that its
+     * source is reachable, and that the resource is still in the state the
+     * reference was minted against.
+     *
+     * Shared between transfers and summaries deliberately. These four are the
+     * gateway's promise about what a reference means, and a second copy of them
+     * is a second place for one to be forgotten — a summary written from a
+     * document that changed after the search would be exactly as wrong as a
+     * transfer of it.
+     */
+    private async resolveForEgress(
+        correlationId: string,
+        reference: string,
+        purpose: string
+    ): Promise<
+        | { refusal: PublicActionState }
+        | {
+              record: ResourceRecord;
+              source: PrivateSource;
+              current: InternalResource;
+              currentStateHash: string;
+          }
+    > {
+        const record = this.references.resolve(reference);
+        if (!record) {
+            const known = this.references.all().some((entry) => entry.ref === reference);
+            return {
+                refusal: await this.rejectRequest(
+                    correlationId,
+                    known ? 'reference_expired' : 'reference_unknown',
+                    { resourceRef: reference }
+                )
+            };
+        }
+        if (!this.references.resolveForPurpose(reference, purpose)) {
+            return {
+                refusal: await this.rejectRequest(correlationId, 'purpose_mismatch', {
+                    resourceRef: reference,
+                    mintedFor: record.purpose,
+                    requestedFor: purpose
+                })
+            };
+        }
+
+        const source = this.sources.get(record.locator.sourceId);
+        if (!source || !source.isAvailable()) {
+            return {
+                refusal: await this.rejectRequest(correlationId, 'source_unavailable', {
+                    sourceId: record.locator.sourceId
+                })
+            };
+        }
+
+        let current: InternalResource | undefined;
+        try {
+            current = await source.fetchMetadata(record.locator.nativeId);
+        } catch (error) {
+            await this.audit.record('source_unavailable', {
+                correlationId,
+                sourceId: source.id,
+                detail: { error: describeError(error) }
+            });
+            return {
+                refusal: await this.rejectRequest(correlationId, 'source_unavailable', {
+                    sourceId: source.id
+                })
+            };
+        }
+        if (!current) {
+            return {
+                refusal: await this.rejectRequest(correlationId, 'reference_unknown', {
+                    resourceRef: reference,
+                    reason: 'resource_gone'
+                })
+            };
+        }
+
+        const currentStateHash = resourceStateHash(current);
+        if (!safeEqual(currentStateHash, record.stateHash)) {
+            await this.audit.record('action_binding_mismatch', {
+                correlationId,
+                resourceRef: record.ref,
+                detail: { expected: record.stateHash, actual: currentStateHash, phase: 'prepare' }
+            });
+            return {
+                refusal: await this.rejectRequest(correlationId, 'resource_changed', {
+                    resourceRef: record.ref
+                })
+            };
+        }
+
+        return { record, source, current, currentStateHash };
+    }
+
+    /**
+     * Reads as much of a document as the source will give, for the egress
+     * assessment to judge.
+     *
+     * Three outcomes, all of them legitimate, and the difference between them is
+     * carried forward rather than smoothed over: the extracted text, the short
+     * excerpt a search left behind, or nothing at all — a scan without OCR has
+     * no text to read, and there is no honest way to conjure one.
+     *
+     * Unlike `summarizeResource`, a missing text does not refuse the request. A
+     * summary without the document would be a fabrication, but a transfer is of
+     * the file itself, and the user can open it. What the gateway owes them is
+     * not a refusal but an accurate account of what was checked, which is what
+     * the returned `kind` becomes: it reaches the model as a stated fact, the
+     * judgement as its recorded basis, and the approval view as a line saying
+     * the content was never read.
+     */
+    private async readEvidence(
+        source: PrivateSource,
+        nativeId: string,
+        current: InternalResource,
+        correlationId: string
+    ): Promise<EgressEvidence> {
+        try {
+            const text = await source.fetchText?.(nativeId);
+            if (text && text.trim().length > 0) {
+                return { kind: 'fulltext', text };
+            }
+        } catch (error) {
+            await this.audit.record('source_unavailable', {
+                correlationId,
+                sourceId: source.id,
+                detail: { error: describeError(error), phase: 'fetch_text_for_assessment' }
+            });
+            this.log.warn('Volltext für die Bewertung nicht lesbar; es bleibt der Auszug.', {
+                sourceId: source.id,
+                error: describeError(error)
+            });
+        }
+        const excerpt = current.excerpt?.trim();
+        if (excerpt && excerpt.length > 0) {
+            return { kind: 'excerpt', text: current.excerpt };
+        }
+        return { kind: 'none' };
+    }
+
     /** Resolves on the next transition of this action, or after `timeoutMs`. */
     private waitForTransition(actionId: string, timeoutMs: number): Promise<void> {
         return new Promise<void>((resolveWait) => {
@@ -868,11 +1220,58 @@ export class Orchestrator {
     }
 
     /**
-     * Performs the approved transfer. Runs after the human decision and is the
-     * only place in the gateway that hands bytes to a target.
+     * Carries out what the user approved. Runs after the human decision and is
+     * the only place in the gateway that hands a payload to anything.
      */
     private async execute(action: ActionRecord): Promise<void> {
-        const target = this.targets.get(action.plan.targetId);
+        if (action.plan.kind === 'summarize_resource') {
+            await this.release(action, action.plan);
+            return;
+        }
+        await this.deliver(action, action.plan);
+    }
+
+    /**
+     * Releases an approved summary for collection.
+     *
+     * Nothing is transmitted here — the gateway does not call outwards, for
+     * summaries no more than for anything else. What changes is that the action
+     * becomes `completed`, and `get_summary` hands the text over from then on.
+     * That status change is the moment the user's decision takes effect, so it
+     * is the moment the audit trail records as the egress.
+     */
+    private async release(action: ActionRecord, plan: SummariseResourcePlan): Promise<void> {
+        if (!safeEqual(sha256Text(plan.summary), plan.summarySha256)) {
+            await this.fail(
+                action.actionId,
+                'delivery_failed',
+                'Der gespeicherte Zusammenfassungstext weicht von der freigegebenen Prüfsumme ab.'
+            );
+            return;
+        }
+        await this.actions.transition(action.actionId, 'completed', {
+            reason: 'summary_released',
+            executedAt: new Date().toISOString(),
+            localOutcome: `Zusammenfassung freigegeben (${plan.summary.length} Zeichen)`
+        });
+        await this.audit.record('egress_performed', {
+            actionId: action.actionId,
+            resourceRef: action.resourceRef,
+            detail: {
+                kind: 'summarize_resource',
+                recipientDisplay: 'Cloud-Agent (Abholung über get_summary)',
+                summarySha256: plan.summarySha256,
+                summaryChars: plan.summary.length,
+                redactions: plan.redactions,
+                bindingHash: action.bindingHash
+            }
+        });
+        this.log.info('Zusammenfassung freigegeben', { actionId: action.actionId });
+    }
+
+    /** Performs the approved transfer of the original document to its target. */
+    private async deliver(action: ActionRecord, plan: SendResourcePlan): Promise<void> {
+        const target = this.targets.get(plan.targetId);
         if (!target) {
             await this.fail(action.actionId, 'target_unavailable', 'Ziel ist nicht mehr konfiguriert.');
             return;
@@ -880,7 +1279,7 @@ export class Orchestrator {
 
         let attachments: EgressAttachment[];
         try {
-            attachments = await this.materialiseAttachments(action);
+            attachments = await this.materialiseAttachments(action, plan);
         } catch (error) {
             await this.fail(action.actionId, 'source_unavailable', describeError(error));
             return;
@@ -888,10 +1287,10 @@ export class Orchestrator {
 
         try {
             const receipt = await target.deliver({
-                subject: action.plan.subject,
-                body: action.plan.body,
+                subject: plan.subject,
+                body: plan.body,
                 attachments,
-                recipient: action.plan.recipientAddress
+                recipient: plan.recipientAddress
             });
             await this.actions.transition(action.actionId, 'completed', {
                 reason: 'delivered',
@@ -901,13 +1300,13 @@ export class Orchestrator {
             await this.audit.record('egress_performed', {
                 actionId: action.actionId,
                 resourceRef: action.resourceRef,
-                targetId: action.plan.targetId,
+                targetId: plan.targetId,
                 detail: {
-                    recipientDisplay: action.plan.recipientDisplay,
-                    subject: action.plan.subject,
-                    bodySha256: sha256Text(action.plan.body),
-                    bodyChars: action.plan.body.length,
-                    attachments: action.plan.attachments,
+                    recipientDisplay: plan.recipientDisplay,
+                    subject: plan.subject,
+                    bodySha256: sha256Text(plan.body),
+                    bodyChars: plan.body.length,
+                    attachments: plan.attachments,
                     deliveryReference: receipt.reference,
                     bindingHash: action.bindingHash
                 }
@@ -930,8 +1329,11 @@ export class Orchestrator {
      * differ and the transfer is abandoned rather than sending content the user
      * never approved.
      */
-    private async materialiseAttachments(action: ActionRecord): Promise<EgressAttachment[]> {
-        const planned = action.plan.attachments;
+    private async materialiseAttachments(
+        action: ActionRecord,
+        plan: SendResourcePlan
+    ): Promise<EgressAttachment[]> {
+        const planned = plan.attachments;
         const staged = this.staged.get(action.actionId);
         if (staged) {
             const digest = sha256Bytes(staged.bytes);
@@ -1100,7 +1502,7 @@ export class Orchestrator {
         await this.audit.record('action_discarded', {
             actionId,
             resourceRef: action.resourceRef,
-            targetId: action.plan.targetId,
+            targetId: targetIdOf(action.plan),
             selectionId: request.selectionId,
             detail: { reason: 'user_chose_other_resource' }
         });
@@ -1129,7 +1531,7 @@ export class Orchestrator {
         await this.audit.record('action_restored', {
             actionId,
             resourceRef: action.resourceRef,
-            targetId: action.plan.targetId,
+            targetId: targetIdOf(action.plan),
             detail: { reason }
         });
         return { kind: 'restored', actionId };
@@ -1231,7 +1633,6 @@ export class Orchestrator {
 
     private toLocalActionView(action: ActionRecord): LocalActionView {
         const record = this.references.resolve(action.resourceRef);
-        const descriptor: TargetDescriptor | undefined = this.targets.get(action.plan.targetId)?.describe();
         const summary: LocalResourceSummary =
             record?.localSummary ??
             ({
@@ -1241,7 +1642,7 @@ export class Orchestrator {
                 nativeIdDisplay: '-'
             } satisfies LocalResourceSummary);
 
-        return {
+        const base: LocalActionViewBase = {
             actionId: action.actionId,
             status: action.status,
             bindingHash: action.bindingHash,
@@ -1257,23 +1658,47 @@ export class Orchestrator {
                 // on actions that already exist.
                 webUrl: record ? this.webUrlFor(record.locator.sourceId, record.locator.nativeId) : undefined
             },
+            judgement: action.judgement
+        };
+
+        if (action.plan.kind === 'summarize_resource') {
+            const plan = action.plan;
+            return {
+                ...base,
+                kind: 'summarize_resource',
+                summary: {
+                    text: plan.summary,
+                    sha256: plan.summarySha256,
+                    chars: plan.summary.length,
+                    redactions: plan.redactions,
+                    residuals: findResiduals(plan.summary),
+                    model: plan.model,
+                    focus: plan.focus
+                }
+            };
+        }
+
+        const plan = action.plan;
+        const descriptor: TargetDescriptor | undefined = this.targets.get(plan.targetId)?.describe();
+        return {
+            ...base,
+            kind: 'send_resource',
             target: {
-                id: action.plan.targetId,
-                label: descriptor?.label ?? action.plan.targetId,
-                recipientDisplay: action.plan.recipientDisplay,
+                id: plan.targetId,
+                label: descriptor?.label ?? plan.targetId,
+                recipientDisplay: plan.recipientDisplay,
                 purpose: descriptor?.purpose ?? '-',
-                dynamicRecipient: action.plan.dynamicRecipient
+                dynamicRecipient: plan.dynamicRecipient
             },
             egress: {
-                subject: action.plan.subject,
-                body: action.plan.body,
-                attachments: action.plan.attachments,
-                totalBytes: action.plan.attachments.reduce((sum, item) => sum + item.byteSize, 0),
+                subject: plan.subject,
+                body: plan.body,
+                attachments: plan.attachments,
+                totalBytes: plan.attachments.reduce((sum, item) => sum + item.byteSize, 0),
                 // Older records predate the field; absent means the gateway wrote
                 // both, which is what those actions in fact carry.
-                authoredByAgent: action.plan.authoredByAgent ?? { subject: false, body: false }
+                authoredByAgent: plan.authoredByAgent ?? { subject: false, body: false }
             },
-            judgement: action.judgement,
             needsRefetch: !this.staged.has(action.actionId)
         };
     }
@@ -1351,14 +1776,33 @@ export function resourceStateHash(resource: InternalResource): string {
     });
 }
 
-/** Pins an approval to one exact resource state, target and payload. */
+/**
+ * Where an approval's payload is allowed to go, as the binding hash names it.
+ *
+ * A summary has no configured target: its destination is the agent that asked,
+ * and it can only be collected through `get_summary`. Naming that destination
+ * explicitly in the hash is what stops a stored plan from being reinterpreted as
+ * a delivery to a target — the two produce different hashes even if everything
+ * else about them matched.
+ */
+const AGENT_DESTINATION = 'cloud_agent';
+
+function bindingDestination(plan: ActionPlan): string {
+    return plan.kind === 'send_resource' ? plan.targetId : AGENT_DESTINATION;
+}
+
+/** Pins an approval to one exact resource state, destination and payload. */
 export function computeBindingHash(
     resourceRef: string,
     resourceStateHashValue: string,
-    targetId: string,
     plan: ActionPlan
 ): string {
-    return stableHash({ resourceRef, resourceStateHash: resourceStateHashValue, targetId, plan });
+    return stableHash({
+        resourceRef,
+        resourceStateHash: resourceStateHashValue,
+        targetId: bindingDestination(plan),
+        plan
+    });
 }
 
 function buildSubject(safeLabel: string): string {

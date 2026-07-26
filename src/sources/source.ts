@@ -42,6 +42,23 @@ export interface PrivateSource {
     fetchOriginal(nativeId: string): Promise<SourceFile>;
 
     /**
+     * The resource's text content, for the local model to summarise.
+     *
+     * Separate from `search`'s short excerpt because the two answer different
+     * questions: an excerpt is enough to tell one candidate from another, while
+     * a summary that only saw the first paragraph would be a summary of the
+     * first paragraph. The text goes to the local model and to nowhere else —
+     * it is never returned to a caller on the Hermes side, and never staged for
+     * a target.
+     *
+     * Optional: a source may hold resources that have no extractable text
+     * (a calendar entry, an image without OCR). Returning `undefined` means "no
+     * text", and the gateway then refuses to summarise rather than summarising
+     * metadata and calling it a summary of the document.
+     */
+    fetchText?(nativeId: string): Promise<string | undefined>;
+
+    /**
      * Address of the resource in the source's own web interface, for the local
      * approval UI to link to. Optional in both senses: a source need not
      * implement it, and an implementation returns `undefined` when no web base

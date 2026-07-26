@@ -67,7 +67,15 @@ const paperlessSourceSchema = z.object({
     /** Upper bound on candidates pulled from the source per search. */
     maxCandidates: z.number().int().min(1).max(50).default(8),
     /** How much text per candidate is handed to the local model. */
-    excerptChars: z.number().int().min(200).max(20000).default(2500)
+    excerptChars: z.number().int().min(200).max(20000).default(2500),
+    /**
+     * How much document text the local model sees when writing a redacted
+     * summary. Larger than `excerptChars` on purpose — telling candidates apart
+     * needs a glance, summarising needs the document — and still bounded, both
+     * by the model's context window and because an unbounded prompt is an
+     * unbounded local runtime.
+     */
+    summaryChars: z.number().int().min(1000).max(200000).default(20000)
 });
 
 const localModelSchema = z.object({

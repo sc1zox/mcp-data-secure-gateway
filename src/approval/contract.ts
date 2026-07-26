@@ -31,6 +31,13 @@ export type ApiActionStatus =
     | 'failed'
     | 'expired';
 
+/**
+ * What an action would do. `send_resource` hands the original document to a
+ * configured target; `summarize_resource` hands a locally redacted text back to
+ * the cloud agent and the document stays here.
+ */
+export type ApiActionKind = 'send_resource' | 'summarize_resource';
+
 export type ApiActionStatusReason =
     | 'awaiting_user'
     | 'user_rejected'
@@ -43,7 +50,8 @@ export type ApiActionStatusReason =
     | 'source_unavailable'
     | 'local_model_unavailable'
     | 'delivery_failed'
-    | 'delivered';
+    | 'delivered'
+    | 'summary_released';
 
 export type ApiSensitivity = 'low' | 'medium' | 'high';
 
@@ -60,6 +68,23 @@ export interface ApiAttachment {
     sha256: string;
 }
 
+/**
+ * What the local model had in front of it when it judged.
+ *
+ * Shown next to the verdict because the two are read together or not at all: a
+ * paragraph about a document and a paragraph about a document's title are
+ * written in the same confident German, and only this says which one is on
+ * screen.
+ */
+export interface ApiJudgementBasis {
+    /** `fulltext` the document's text, `excerpt` a short sample, `none` metadata only. */
+    kind: 'fulltext' | 'excerpt' | 'none';
+    /** Characters of document text the model saw. */
+    textChars: number;
+    /** Whether the model confirmed the content matches title and purpose. */
+    contentChecked: boolean;
+}
+
 /** Verdict of the local model, shown so the user can weigh it — not obey it. */
 export interface ApiJudgement {
     model: string;
@@ -68,6 +93,8 @@ export interface ApiJudgement {
     reasoning: string;
     sensitivity: ApiSensitivity;
     uncertainties: string[];
+    /** Absent on actions prepared before the gateway recorded this. */
+    basis?: ApiJudgementBasis;
     createdAt: string;
 }
 
@@ -122,7 +149,8 @@ export interface ApiEgressPlan {
     authoredByAgent: { subject: boolean; body: boolean };
 }
 
-export interface ApiActionView {
+/** Everything both kinds of pending action have in common. */
+export interface ApiActionViewBase {
     actionId: string;
     status: ApiActionStatus;
     /** Hash over the whole plan. Goes back with the approval to pin it. */
@@ -131,12 +159,64 @@ export interface ApiActionView {
     createdAt: string;
     expiresAt: string;
     resource: ApiResourceSummary;
+    judgement: ApiJudgement;
+}
+
+/** A document on its way to a configured target. */
+export interface ApiSendActionView extends ApiActionViewBase {
+    kind: 'send_resource';
     target: ApiTargetSummary;
     egress: ApiEgressPlan;
-    judgement: ApiJudgement;
     /** True when the staged bytes are gone (e.g. after a restart) and must be re-read. */
     needsRefetch: boolean;
 }
+
+/** One category of detail the local model claims to have removed. */
+export type ApiRedactionPlaceholder =
+    | 'REDACTED_NAME'
+    | 'REDACTED_ORG'
+    | 'REDACTED_ADDRESS'
+    | 'REDACTED_CONTACT'
+    | 'REDACTED_DATE'
+    | 'REDACTED_AMOUNT'
+    | 'REDACTED_ID'
+    | 'REDACTED_HEALTH'
+    | 'REDACTED_CREDENTIAL'
+    | 'REDACTED_OTHER';
+
+/**
+ * Something in the summary that still looks like it should have been removed.
+ *
+ * Produced by a pattern scan the gateway runs over the finished text — a second
+ * opinion about the local model's work, not a filter it had to pass. It exists
+ * to be shown, so the person deciding gets pointed at the two lines worth
+ * re-reading instead of being asked to proofread a paragraph unaided.
+ */
+export interface ApiResidualFinding {
+    kind: string;
+    sample: string;
+}
+
+/** The exact text that would be handed to the cloud agent. */
+export interface ApiSummaryPlan {
+    text: string;
+    sha256: string;
+    chars: number;
+    redactions: ApiRedactionPlaceholder[];
+    residuals: ApiResidualFinding[];
+    /** The local model that wrote it. */
+    model: string;
+    /** What the agent said it was looking for, if anything. */
+    focus?: string;
+}
+
+/** A redacted summary waiting to be released to the cloud agent. */
+export interface ApiSummaryActionView extends ApiActionViewBase {
+    kind: 'summarize_resource';
+    summary: ApiSummaryPlan;
+}
+
+export type ApiActionView = ApiSendActionView | ApiSummaryActionView;
 
 // ----------------------------------------------------------------- selections
 
@@ -196,13 +276,26 @@ export interface ApiHistoryEntry {
     decidedAt?: string;
     executedAt?: string;
     localOutcome?: string;
-    plan: {
-        targetId: string;
-        recipientDisplay: string;
-        dynamicRecipient: boolean;
-        subject?: string;
-        attachments: ApiAttachment[];
-    };
+    /**
+     * The plan, narrowed to what a table row needs. Neither branch carries the
+     * payload: a mail body and a summary text both belong in the approval view
+     * and the audit trail, not in a list of everything that ever happened.
+     */
+    plan:
+        | {
+              kind: 'send_resource';
+              targetId: string;
+              recipientDisplay: string;
+              dynamicRecipient: boolean;
+              subject?: string;
+              attachments: ApiAttachment[];
+          }
+        | {
+              kind: 'summarize_resource';
+              summaryChars: number;
+              summarySha256: string;
+              redactions: ApiRedactionPlaceholder[];
+          };
     judgement: ApiJudgement;
 }
 

@@ -1,5 +1,5 @@
-import type { ActionRecord, ActionStatus, ActionStatusReason } from '../core/types.js';
-import { TERMINAL_ACTION_STATUSES } from '../core/types.js';
+import type { ActionPlan, ActionRecord, ActionStatus, ActionStatusReason } from '../core/types.js';
+import { TERMINAL_ACTION_STATUSES, targetIdOf } from '../core/types.js';
 import { JsonlStore, storePath } from './jsonlStore.js';
 import type { AuditLog } from './auditLog.js';
 
@@ -27,6 +27,34 @@ const ALLOWED_TRANSITIONS: Record<ActionStatus, readonly ActionStatus[]> = {
     failed: [],
     expired: []
 };
+
+/**
+ * What a prepared action puts in the trail, per kind.
+ *
+ * Neither branch writes the payload itself: the mail body is recorded by
+ * character count, and a summary by its digest and length. The text of both
+ * already lives in `actions.jsonl`, and an audit trail that copied it would be a
+ * second file holding private content with a different retention rule — this one
+ * is never compacted and never deleted.
+ */
+function planAuditDetail(plan: ActionPlan): Record<string, unknown> {
+    if (plan.kind === 'summarize_resource') {
+        return {
+            kind: plan.kind,
+            summarySha256: plan.summarySha256,
+            summaryChars: plan.summary.length,
+            redactions: plan.redactions,
+            model: plan.model
+        };
+    }
+    return {
+        kind: plan.kind,
+        recipientDisplay: plan.recipientDisplay,
+        subject: plan.subject,
+        bodyChars: plan.body.length,
+        attachments: plan.attachments
+    };
+}
 
 /** Notified after a status change was persisted. */
 export type ActionTransitionListener = (record: ActionRecord) => void;
@@ -66,15 +94,12 @@ export class ActionStore {
         await this.audit.record('action_prepared', {
             actionId: record.actionId,
             resourceRef: record.resourceRef,
-            targetId: record.plan.targetId,
+            targetId: targetIdOf(record.plan),
             detail: {
                 purpose: record.purpose,
                 bindingHash: record.bindingHash,
                 resourceStateHash: record.resourceStateHash,
-                recipientDisplay: record.plan.recipientDisplay,
-                subject: record.plan.subject,
-                bodyChars: record.plan.body.length,
-                attachments: record.plan.attachments,
+                ...planAuditDetail(record.plan),
                 judgement: record.judgement,
                 expiresAt: record.expiresAt
             }
@@ -170,7 +195,7 @@ export class ActionStore {
             await this.audit.record('action_expired', {
                 actionId: record.actionId,
                 resourceRef: record.resourceRef,
-                targetId: record.plan.targetId,
+                targetId: targetIdOf(record.plan),
                 detail: { expiresAt: record.expiresAt }
             });
             expired += 1;

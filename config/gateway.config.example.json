@@ -24,7 +24,8 @@
       },
       "webBaseUrl": "${PAPERLESS_URL}",
       "maxCandidates": 8,
-      "excerptChars": 2500
+      "excerptChars": 2500,
+      "summaryChars": 20000
     }
   ],
 

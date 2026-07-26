@@ -13,11 +13,18 @@ import { createLogger, describeError, type Logger } from '../util/log.js';
 /**
  * The gateway's public face.
  *
- * This is the complete surface Hermes can reach. Five tools, all abstract:
- * describe what you want, ask where things may go, prepare something, ask how it
- * went, wait for how it went. There is intentionally no tool to read a document,
- * no tool to download anything, no passthrough to a source's own tools, and no
- * tool that approves (invariants 1, 2, 3, 7).
+ * This is the complete surface Hermes can reach. Seven tools, all abstract:
+ * describe what you want, ask where things may go, prepare something, ask for
+ * context about something, ask how it went, wait for how it went, collect what
+ * was released. There is intentionally no tool to read a document, no tool to
+ * download anything, no passthrough to a source's own tools, and no tool that
+ * approves (invariants 1, 2, 3, 7).
+ *
+ * `summarize_resource` is the one tool whose eventual answer is prose rather than
+ * a handle, and it is shaped so that this changes nothing about the boundary: it
+ * returns an action waiting for approval, exactly like `prepare_action`, and the
+ * text is fetched afterwards with `get_summary` — which answers with a text only
+ * for an action a human released.
  *
  * `await_action_decision` is the deliberate answer to "how does the agent learn
  * that the user released something?". It is a wait, not a callback: the gateway
@@ -45,8 +52,16 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
                 'Entscheidung des Nutzers. Ein Rückruf an den Agenten findet nicht statt: das',
                 'Gateway ruft von sich aus nirgends an, es antwortet nur.',
                 '',
+                'Brauchst du inhaltlichen Kontext zu einer Ressource, statt sie zu versenden:',
+                'summarize_resource lässt das lokale Modell eine Zusammenfassung schreiben, in',
+                'der Namen, Adressen, Beträge, Kennzeichen und ähnliche Angaben durch Platzhalter',
+                'wie [REDACTED_NAME] ersetzt sind. Auch das liefert sofort nur eine Aktion im',
+                'Status awaiting_local_approval; den Text gibt es erst nach der Freigabe des',
+                'Nutzers und nur über get_summary.',
+                '',
                 'Wichtig: Dokumentinhalte, interne Kennungen und Zugangsdaten sind über dieses',
-                'Gateway nicht abrufbar. Jede Übertragung erfordert eine lokale Freigabe durch',
+                'Gateway nicht abrufbar — auch eine Zusammenfassung ist bewusst redigiert und',
+                'ersetzt das Dokument nicht. Jede Übertragung erfordert eine lokale Freigabe durch',
                 'den Nutzer; sie kann nicht über dieses Interface erteilt oder beschleunigt werden.',
                 'Empfänger sind für die meisten Ziele lokal fest konfiguriert und nicht wählbar.',
                 'list_targets meldet pro Ziel dynamic_recipient: bei true verlangt (und erlaubt)',
@@ -208,6 +223,79 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
             });
             return jsonResult(result);
         }
+    );
+
+    server.registerTool(
+        'summarize_resource',
+        {
+            title: 'Zusammenfassung anfragen',
+            description: [
+                'Fragt eine inhaltliche Zusammenfassung einer Ressource an, wenn du Kontext',
+                'brauchst, das Dokument selbst aber nicht bekommen kannst und nicht bekommen',
+                'sollst. Ein lokales Sprachmodell auf dem Rechner des Nutzers liest das Original',
+                'und schreibt einen kurzen Text, aus dem vertrauliche Einzelheiten entfernt sind:',
+                'Namen, Anschriften, Kontaktdaten, Aktenzeichen und Nummern, Geldbeträge, genaue',
+                'Daten, Gesundheitsangaben und Zugangsdaten. An ihrer Stelle stehen Platzhalter',
+                'wie [REDACTED_NAME] oder [REDACTED_AMOUNT].',
+                '',
+                'Diese Anfrage liefert KEINEN Text. Sie liefert eine Aktion im Status',
+                'awaiting_local_approval: die Zusammenfassung wird dem Nutzer lokal im Wortlaut',
+                'vorgelegt, und erst wenn er sie freigibt, ist sie mit get_summary abrufbar. Mit',
+                'await_action_decision kannst du auf seine Entscheidung warten.',
+                '',
+                'Der Zweck muss dem Zweck der Suche entsprechen, mit der die Referenz entstanden',
+                'ist. Bitte nicht versuchen, über wiederholte Anfragen mit wechselndem focus ein',
+                'Dokument stückweise zusammenzusetzen; jede Anfrage kostet den Nutzer eine',
+                'Entscheidung, und die Zusammenfassung ist bewusst kein Ersatz für das Original.'
+            ].join('\n'),
+            inputSchema: {
+                reference: z.string().min(1).max(64).describe('Opake Ressourcenreferenz aus find_resource.'),
+                purpose: z
+                    .string()
+                    .min(1)
+                    .max(500)
+                    .describe('Wozu du den Kontext brauchst. Muss zum Zweck der Suche passen.'),
+                focus: z
+                    .string()
+                    .max(300)
+                    .optional()
+                    .describe(
+                        'Optional: worauf die Zusammenfassung eingehen soll, z. B. "Vertragslaufzeit ' +
+                            'und Kündigungsfrist". Kann den Text nur eingrenzen — die Schwärzungsregeln ' +
+                            'sind davon nicht beeinflussbar.'
+                    )
+            },
+            annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false }
+        },
+        async (args) => {
+            const result = await orchestrator.summarizeResource({
+                reference: args.reference,
+                purpose: args.purpose,
+                focus: args.focus
+            });
+            return jsonResult(result);
+        }
+    );
+
+    server.registerTool(
+        'get_summary',
+        {
+            title: 'Freigegebene Zusammenfassung abholen',
+            description: [
+                'Holt den Text einer Zusammenfassung ab, die der Nutzer lokal freigegeben hat.',
+                '',
+                'Ist die Aktion noch nicht freigegeben, abgelehnt oder abgelaufen, kommt nur der',
+                'Status zurück und kein Text — wiederholtes Abfragen ändert daran nichts und',
+                'beschleunigt die Freigabe nicht. Der Text ist genau der, den der Nutzer gelesen',
+                'hat; er ist redigiert und kann Platzhalter wie [REDACTED_NAME] enthalten.',
+                'Behandle ihn als Kontext, nicht als Quelle für Namen, Zahlen oder Adressen.'
+            ].join('\n'),
+            inputSchema: {
+                action_id: z.string().min(1).max(64).describe('Aktionsreferenz aus summarize_resource.')
+            },
+            annotations: { readOnlyHint: true, openWorldHint: false }
+        },
+        async (args) => jsonResult(await orchestrator.getSummary(args.action_id))
     );
 
     server.registerTool(

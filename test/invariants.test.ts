@@ -178,7 +178,7 @@ describe('Invariante 6: nur lokal konfigurierte Ziele', () => {
         assert.equal(prepared.status, 'awaiting_local_approval');
 
         const view = orchestrator.localAction(prepared.action_id);
-        assert.ok(view);
+        assert.ok(view?.kind === 'send_resource');
         assert.equal(view.target.dynamicRecipient, true);
         assert.equal(view.target.recipientDisplay, 'jobs@unternehmen.example');
 

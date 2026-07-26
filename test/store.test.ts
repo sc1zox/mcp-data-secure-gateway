@@ -7,11 +7,14 @@ import { parseConfig, ConfigError } from '../src/config.js';
 import { JsonlStore, storePath } from '../src/store/jsonlStore.js';
 import { ReferenceStore } from '../src/store/referenceStore.js';
 import { AuditLog } from '../src/store/auditLog.js';
-import { __extractDocumentsForTest as extractDocuments } from '../src/sources/paperlessSource.js';
+import {
+    PaperlessSource,
+    __extractDocumentsForTest as extractDocuments
+} from '../src/sources/paperlessSource.js';
 import { computeBindingHash, resourceStateHash } from '../src/core/orchestrator.js';
 import { stableHash } from '../src/util/hash.js';
 import { maskChatId, maskEmail } from '../src/targets/target.js';
-import type { ActionPlan, ResourceRecord } from '../src/core/types.js';
+import type { ResourceRecord, SendResourcePlan, SummariseResourcePlan } from '../src/core/types.js';
 import { makeConfig, makeResource, TEST_SECRET_TOKEN } from './helpers.js';
 
 const dirs: string[] = [];
@@ -153,13 +156,23 @@ describe('ReferenceStore', () => {
 });
 
 describe('Bindungs-Hash', () => {
-    const plan: ActionPlan = {
+    const plan: SendResourcePlan = {
         kind: 'send_resource',
         targetId: 'private_mail',
         recipientDisplay: 'i**@example.org',
+        dynamicRecipient: false,
         subject: 'Betreff',
         body: 'Text',
-        attachments: [{ filename: 'a.pdf', mimeType: 'application/pdf', byteSize: 10, sha256: 'ab'.repeat(32) }]
+        attachments: [{ filename: 'a.pdf', mimeType: 'application/pdf', byteSize: 10, sha256: 'ab'.repeat(32) }],
+        authoredByAgent: { subject: false, body: false }
+    };
+
+    const summaryPlan: SummariseResourcePlan = {
+        kind: 'summarize_resource',
+        summary: 'Ein Schreiben von [REDACTED_ORG] zu einer laufenden Sache.',
+        summarySha256: 'ef'.repeat(32),
+        redactions: ['REDACTED_ORG'],
+        model: 'test-model'
     };
 
     it('ist stabil gegenüber der Schlüsselreihenfolge', () => {
@@ -167,20 +180,20 @@ describe('Bindungs-Hash', () => {
     });
 
     it('ändert sich, wenn das Ziel wechselt', () => {
-        const a = computeBindingHash('res_1', 'state', 'private_mail', plan);
-        const b = computeBindingHash('res_1', 'state', 'private_telegram', plan);
+        const a = computeBindingHash('res_1', 'state', plan);
+        const b = computeBindingHash('res_1', 'state', { ...plan, targetId: 'private_telegram' });
         assert.notEqual(a, b);
     });
 
     it('ändert sich, wenn sich der Zustand der Ressource ändert', () => {
-        const a = computeBindingHash('res_1', 'state-alt', 'private_mail', plan);
-        const b = computeBindingHash('res_1', 'state-neu', 'private_mail', plan);
+        const a = computeBindingHash('res_1', 'state-alt', plan);
+        const b = computeBindingHash('res_1', 'state-neu', plan);
         assert.notEqual(a, b);
     });
 
     it('ändert sich, wenn ein Anhang ausgetauscht wird', () => {
-        const a = computeBindingHash('res_1', 'state', 'private_mail', plan);
-        const b = computeBindingHash('res_1', 'state', 'private_mail', {
+        const a = computeBindingHash('res_1', 'state', plan);
+        const b = computeBindingHash('res_1', 'state', {
             ...plan,
             attachments: [{ ...plan.attachments[0]!, sha256: 'cd'.repeat(32) }]
         });
@@ -188,9 +201,22 @@ describe('Bindungs-Hash', () => {
     });
 
     it('ändert sich, wenn der Nachrichtentext geändert wird', () => {
-        const a = computeBindingHash('res_1', 'state', 'private_mail', plan);
-        const b = computeBindingHash('res_1', 'state', 'private_mail', { ...plan, body: 'anderer Text' });
+        const a = computeBindingHash('res_1', 'state', plan);
+        const b = computeBindingHash('res_1', 'state', { ...plan, body: 'anderer Text' });
         assert.notEqual(a, b);
+    });
+
+    it('ändert sich, wenn der Text einer Zusammenfassung geändert wird', () => {
+        const a = computeBindingHash('res_1', 'state', summaryPlan);
+        const b = computeBindingHash('res_1', 'state', { ...summaryPlan, summary: 'Etwas anderes.' });
+        assert.notEqual(a, b);
+    });
+
+    it('unterscheidet eine Zusammenfassung von einer Übertragung', () => {
+        assert.notEqual(
+            computeBindingHash('res_1', 'state', plan),
+            computeBindingHash('res_1', 'state', summaryPlan)
+        );
     });
 
     it('erkennt eine geänderte Ressource über den Zustands-Hash', () => {
@@ -225,6 +251,92 @@ describe('Paperless-Antwortformate', () => {
 
     it('gibt bei unlesbarer Antwort eine leere Liste zurück', () => {
         assert.deepEqual(extractDocuments({ content: [{ type: 'text', text: 'kein JSON' }] }), []);
+    });
+});
+
+/**
+ * The search tool is a list endpoint and answers unevenly: one candidate arrives
+ * with its OCR text, the next with none, and tags come back as bare ids. Judging
+ * that as-is is how a document nobody could read gets picked over one whose text
+ * names the very thing that was searched for.
+ */
+describe('Paperless: Kandidaten nachladen', () => {
+    type Handler = (tool: string, args: Record<string, unknown>) => unknown;
+
+    function stubbed(handler: Handler, knownTools?: string[]) {
+        const source = new PaperlessSource(makeConfig().sources[0]!);
+        const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+        (source as unknown as { client: unknown }).client = {
+            hasTool: (name: string) => (knownTools ? knownTools.includes(name) : true),
+            resolveParamName: (_tool: string, candidates: string[]) => candidates[0],
+            async callTool(tool: string, args: Record<string, unknown>) {
+                calls.push({ tool, args });
+                const payload = handler(tool, args);
+                if (payload instanceof Error) {
+                    throw payload;
+                }
+                return { content: [{ type: 'text', text: JSON.stringify(payload) }] };
+            }
+        };
+        return { source, calls };
+    }
+
+    const TAGS = [
+        { id: 3, name: 'Altklausur' },
+        { id: 9, name: 'Künstliche Intelligenz' },
+        { id: 1, name: 'Studium' }
+    ];
+
+    /** Search answers thin, `get` answers fully — the shape that caused the miss. */
+    const handler: Handler = (tool, args) => {
+        if (tool === 'search_documents') {
+            return { results: [{ id: 39, title: 'Altklausur', tags: [3, 9, 1] }] };
+        }
+        if (tool === 'list_tags') {
+            return TAGS;
+        }
+        return {
+            id: args.id,
+            title: 'Altklausur',
+            modified: '2026-01-09T15:30:55.000Z',
+            tags: [3, 9, 1],
+            content: 'Prüfungsumschlag: Einführung in Künstliche Intelligenz SS25.'
+        };
+    };
+
+    it('holt Inhalt und Schlagwörter nach, die die Suche nicht mitgeliefert hat', async () => {
+        const { source, calls } = stubbed(handler);
+        const [resource] = await source.search('altklausur ki', 8);
+
+        assert.ok(resource);
+        assert.match(resource.excerpt ?? '', /Einführung in Künstliche Intelligenz SS25/);
+        assert.deepEqual(resource.attributes?.Schlagwörter, [
+            'Altklausur',
+            'Künstliche Intelligenz',
+            'Studium'
+        ]);
+        assert.ok(calls.some((call) => call.tool === 'get_document' && call.args.id === 39));
+    });
+
+    it('lässt unauflösbare Schlagwort-Kennungen weg, statt Zahlen als Merkmal zu zeigen', async () => {
+        // No tag tool on the server: ids stay ids, and an id is not information.
+        const { source } = stubbed(handler, ['search_documents', 'get_document']);
+        const [resource] = await source.search('altklausur ki', 8);
+
+        assert.ok(resource);
+        assert.equal(resource.attributes?.Schlagwörter, undefined);
+        assert.match(resource.excerpt ?? '', /Künstliche Intelligenz/);
+    });
+
+    it('behält einen Kandidaten, dessen Nachladen fehlschlägt', async () => {
+        const { source } = stubbed((tool, args) =>
+            tool === 'get_document' ? new Error('Zeitüberschreitung') : handler(tool, args)
+        );
+        const [resource] = await source.search('altklausur ki', 8);
+
+        assert.ok(resource);
+        assert.equal(resource.title, 'Altklausur');
+        assert.equal(resource.excerpt, undefined);
     });
 });
 

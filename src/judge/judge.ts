@@ -1,6 +1,11 @@
 import { z } from 'zod';
-import type { InternalResource, JudgementRecord } from '../core/types.js';
-import { sanitiseLabel } from '../core/egress.js';
+import type {
+    InternalResource,
+    JudgementBasis,
+    JudgementRecord,
+    RedactionPlaceholder
+} from '../core/types.js';
+import { placeholdersIn, sanitiseLabel, sanitiseSummary } from '../core/egress.js';
 import { createLogger, describeError, type Logger } from '../util/log.js';
 import type { AuditLog } from '../store/auditLog.js';
 import {
@@ -11,8 +16,10 @@ import {
 import {
     EGRESS_SYSTEM_PROMPT,
     SELECTION_SYSTEM_PROMPT,
+    SUMMARY_SYSTEM_PROMPT,
     buildEgressUserPrompt,
     buildSelectionUserPrompt,
+    buildSummaryUserPrompt,
     createFence
 } from './prompts.js';
 
@@ -37,6 +44,16 @@ const selectionResponseSchema = z.object({
     uncertainties: z.array(z.string().max(500)).max(10).default([])
 });
 
+const summaryResponseSchema = z.object({
+    summary: z.string().min(1).max(8000),
+    purposeMatch: z.boolean(),
+    confidence: z.number().min(0).max(1),
+    sensitivity: z.enum(['low', 'medium', 'high']),
+    reasoning: z.string().min(1).max(2000),
+    uncertainties: z.array(z.string().max(500)).max(10).default([]),
+    residualRisk: z.boolean()
+});
+
 const egressResponseSchema = z.object({
     purposeMatch: z.boolean(),
     confidence: z.number().min(0).max(1),
@@ -44,7 +61,13 @@ const egressResponseSchema = z.object({
     safeLabel: z.string().optional(),
     reasoning: z.string().min(1).max(2000),
     uncertainties: z.array(z.string().max(500)).max(10).default([]),
-    recommendManualReview: z.boolean()
+    recommendManualReview: z.boolean(),
+    /**
+     * The model's claim that it read the document and found it to be the one the
+     * title and the purpose describe. Older prompts did not ask for it, so a
+     * missing field means "did not check" rather than a schema violation.
+     */
+    contentChecked: z.boolean().default(false)
 });
 
 export type SelectionOutcome =
@@ -61,6 +84,29 @@ export interface EgressAssessment {
     purposeMatch: boolean;
     recommendManualReview: boolean;
     safeLabel?: string;
+    judgement: JudgementRecord;
+}
+
+/**
+ * The document text handed to the egress assessment, and where it came from.
+ *
+ * Passed explicitly rather than read off the resource, because the difference
+ * between "the source gave us the document" and "the source gave us the first
+ * paragraph" and "the source gave us nothing" decides what the verdict is worth
+ * — and only the caller, which did the reading, knows which of the three it is.
+ */
+export interface EgressEvidence {
+    kind: JudgementBasis['kind'];
+    /** The text itself. Absent exactly when `kind` is `none`. */
+    text?: string;
+}
+
+/** A redacted summary as it came back from the local model, already normalised. */
+export interface SummaryDraft {
+    /** The exact characters that would be shown and, after approval, handed over. */
+    summary: string;
+    /** Placeholder categories actually present in the text. */
+    redactions: RedactionPlaceholder[];
     judgement: JudgementRecord;
 }
 
@@ -180,9 +226,22 @@ export class Judge {
         };
     }
 
-    /** Assesses a concrete resource-to-target transfer before it is offered for approval. */
+    /**
+     * Assesses a concrete resource-to-target transfer before it is offered for
+     * approval.
+     *
+     * The model is asked to check the document, not to recognise its name. That
+     * distinction is the reason `evidence` is a parameter: a title, a
+     * correspondent and three tags are enough to write a confident-sounding
+     * paragraph about a file nobody opened, and the gateway has no way to tell
+     * such a paragraph from a real one after the fact. So the prompt states how
+     * much of the document the model is being given, the model reports back
+     * whether it actually checked it, and both are recorded — with the report
+     * overruled where it contradicts what was handed over.
+     */
     async assessEgress(
         resource: InternalResource,
+        evidence: EgressEvidence,
         purpose: string,
         targetLabel: string,
         targetPurpose: string,
@@ -191,26 +250,60 @@ export class Judge {
         const fence = createFence();
         const raw = await this.invoke(
             EGRESS_SYSTEM_PROMPT(fence.nonce),
-            buildEgressUserPrompt(fence, resource, purpose, targetLabel, targetPurpose),
+            buildEgressUserPrompt(fence, resource, evidence, purpose, targetLabel, targetPurpose),
             'egress',
             correlationId
         );
         const parsed = this.parse(egressResponseSchema, raw, 'egress', correlationId);
 
         const uncertainties = [...parsed.uncertainties];
-        if (!parsed.purposeMatch) {
+        // Without text there is nothing the model could have checked, so its own
+        // account of having checked is discarded rather than believed, and the
+        // two conclusions that would have to rest on the content are withdrawn.
+        const blind = evidence.kind === 'none';
+        const contentChecked = !blind && parsed.contentChecked;
+        const purposeMatch = !blind && parsed.purposeMatch;
+        const recommendManualReview = blind || !contentChecked || parsed.recommendManualReview;
+
+        if (blind && parsed.contentChecked) {
+            await this.audit.record('judge_output_rejected', {
+                correlationId,
+                detail: { task: 'egress', reason: 'content_check_without_content' }
+            });
+            this.log.warn(
+                'Modell gibt eine Inhaltsprüfung an, obwohl kein Dokumenttext vorlag. Angabe verworfen.',
+                { nativeId: resource.locator.nativeId }
+            );
+        }
+        if (blind) {
+            uncertainties.unshift(
+                'Zu diesem Dokument lag kein auswertbarer Text vor. Das lokale Modell hat nur Titel und ' +
+                    'Merkmale gesehen, nicht den Inhalt der Datei, die versandt würde.'
+            );
+        } else if (!contentChecked) {
+            uncertainties.unshift(
+                'Das lokale Modell hat nicht bestätigt, dass der Dokumentinhalt zu Titel und Zweck passt.'
+            );
+        }
+        if (!purposeMatch && !blind) {
             uncertainties.unshift('Das lokale Modell hält den Versand für nicht durch den Zweck gedeckt.');
         }
-        if (parsed.recommendManualReview) {
+        if (recommendManualReview) {
             uncertainties.unshift('Das lokale Modell empfiehlt eine genaue manuelle Prüfung.');
         }
 
+        const basis: JudgementBasis = {
+            kind: evidence.kind,
+            textChars: evidence.text?.length ?? 0,
+            contentChecked
+        };
         const judgement: JudgementRecord = {
             model: this.client.model,
             confidence: parsed.confidence,
             reasoning: parsed.reasoning,
             sensitivity: parsed.sensitivity,
             uncertainties,
+            basis,
             createdAt: new Date().toISOString()
         };
 
@@ -221,21 +314,107 @@ export class Judge {
                 task: 'egress',
                 model: this.client.model,
                 nativeId: resource.locator.nativeId,
-                purposeMatch: parsed.purposeMatch,
+                basis,
+                claimedContentChecked: parsed.contentChecked,
+                claimedPurposeMatch: parsed.purposeMatch,
+                purposeMatch,
                 confidence: parsed.confidence,
                 sensitivity: parsed.sensitivity,
-                recommendManualReview: parsed.recommendManualReview,
+                recommendManualReview,
                 reasoning: parsed.reasoning,
                 uncertainties
             }
         });
 
         return {
-            purposeMatch: parsed.purposeMatch,
-            recommendManualReview: parsed.recommendManualReview,
+            purposeMatch,
+            recommendManualReview,
             safeLabel: parsed.safeLabel ? sanitiseLabel(parsed.safeLabel) : undefined,
             judgement
         };
+    }
+
+    /**
+     * Writes a redacted summary of a document.
+     *
+     * This is the only task whose output is meant to leave the machine as prose,
+     * so the model's answer is treated as a draft rather than as a result: the
+     * text is normalised into the exact characters that will be displayed, the
+     * placeholders it claims are re-derived from the text itself rather than
+     * taken on trust, and everything the model says about its own work is filed
+     * under "uncertainties" for the user to read. The gateway never concludes
+     * from a confident answer here that the summary is safe — only the person
+     * reading it does that.
+     */
+    async summariseResource(
+        resource: InternalResource,
+        text: string,
+        purpose: string,
+        focus: string | undefined,
+        correlationId: string
+    ): Promise<SummaryDraft> {
+        const fence = createFence();
+        const raw = await this.invoke(
+            SUMMARY_SYSTEM_PROMPT(fence.nonce),
+            buildSummaryUserPrompt(fence, resource, text, purpose, focus),
+            'summary',
+            correlationId
+        );
+        const parsed = this.parse(summaryResponseSchema, raw, 'summary', correlationId);
+
+        const summary = sanitiseSummary(parsed.summary);
+        // Derived from the finished text, not from a field the model filled in:
+        // what it says it redacted and what the text actually contains are two
+        // different claims, and only the second one is checkable.
+        const redactions = placeholdersIn(summary);
+        const uncertainties = [...parsed.uncertainties];
+        if (parsed.residualRisk) {
+            uncertainties.unshift(
+                'Das lokale Modell hält es für möglich, dass der Text noch schützenswerte Angaben enthält.'
+            );
+        }
+        if (!parsed.purposeMatch) {
+            uncertainties.unshift(
+                'Das lokale Modell sieht den angegebenen Zweck durch den Dokumentinhalt nicht gedeckt.'
+            );
+        }
+
+        const judgement: JudgementRecord = {
+            model: this.client.model,
+            confidence: parsed.confidence,
+            reasoning: parsed.reasoning,
+            sensitivity: parsed.sensitivity,
+            uncertainties,
+            // A summary is only ever written from the document's text — the
+            // orchestrator refuses the call outright when there is none — so the
+            // basis here is a fact about the path, not a report from the model.
+            basis: { kind: 'fulltext', textChars: text.length, contentChecked: true },
+            createdAt: new Date().toISOString()
+        };
+
+        await this.audit.record('judge_invoked', {
+            correlationId,
+            sourceId: resource.locator.sourceId,
+            detail: {
+                task: 'summary',
+                model: this.client.model,
+                nativeId: resource.locator.nativeId,
+                inputChars: text.length,
+                // The text itself is not duplicated here: it is stored with the
+                // action, and the audit trail should not become a second place
+                // that holds it.
+                summaryChars: summary.length,
+                redactions,
+                purposeMatch: parsed.purposeMatch,
+                residualRisk: parsed.residualRisk,
+                confidence: parsed.confidence,
+                sensitivity: parsed.sensitivity,
+                reasoning: parsed.reasoning,
+                uncertainties
+            }
+        });
+
+        return { summary, redactions, judgement };
     }
 
     private async invoke(

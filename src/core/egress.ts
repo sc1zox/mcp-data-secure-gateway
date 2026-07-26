@@ -1,4 +1,13 @@
-import type { ActionRecord, ActionStatus, ActionStatusReason, ResourceRecord, ResourceType, TargetDescriptor } from './types.js';
+import {
+    REDACTION_PLACEHOLDERS,
+    type ActionRecord,
+    type ActionStatus,
+    type ActionStatusReason,
+    type RedactionPlaceholder,
+    type ResourceRecord,
+    type ResourceType,
+    type TargetDescriptor
+} from './types.js';
 
 /**
  * The only place where data is shaped for Hermes.
@@ -15,9 +24,15 @@ import type { ActionRecord, ActionStatus, ActionStatusReason, ResourceRecord, Re
  *     content — or a local model that has read that content — narrate itself
  *     across the boundary, so the boundary simply does not carry free text.
  *
- * The one exception is a resource's `safeLabel`, which is a short designation
- * the local model explicitly cleared for egress. It is length-capped and
- * scrubbed here as a second line of defence.
+ * There are exactly two exceptions, and both are model-authored text that a
+ * human cleared:
+ *
+ *  - a resource's `safeLabel`, a short designation, length-capped and scrubbed
+ *    here as a second line of defence;
+ *  - a redacted summary, which is the entire point of `summarize_resource` and
+ *    is the only free text that ever crosses this boundary. It crosses only
+ *    after the user read the exact characters in the approval view and released
+ *    them, and it passes the same guard as everything else on the way out.
  */
 
 export type EgressNoteCode =
@@ -46,7 +61,13 @@ export type EgressNoteCode =
     | 'action_failed'
     | 'resource_changed'
     | 'action_unknown'
-    | 'invalid_request';
+    | 'invalid_request'
+    | 'summary_awaiting_approval'
+    | 'summary_released'
+    | 'summary_not_released'
+    | 'summary_rejected'
+    | 'summary_no_text'
+    | 'summary_unusable';
 
 /**
  * Canned German notes. Wording is intentionally about the workflow and never
@@ -85,10 +106,28 @@ export const EGRESS_NOTES: Record<EgressNoteCode, string> = {
     resource_changed:
         'Die Ressource hat sich seit der Vorbereitung geändert. Die Aktion muss neu vorbereitet werden.',
     action_unknown: 'Diese Aktionsreferenz ist unbekannt.',
-    invalid_request: 'Die Anfrage war unvollständig oder ungültig.'
+    invalid_request: 'Die Anfrage war unvollständig oder ungültig.',
+    summary_awaiting_approval:
+        'Eine redigierte Zusammenfassung wurde lokal erstellt und liegt dem Nutzer zur Prüfung vor. ' +
+        'Der Text wird erst nach dessen Freigabe herausgegeben; danach ist er mit get_summary abrufbar.',
+    summary_released: 'Der Nutzer hat die Zusammenfassung freigegeben.',
+    summary_not_released:
+        'Für diese Aktion liegt keine freigegebene Zusammenfassung vor. Der Text wird nicht herausgegeben.',
+    summary_rejected: 'Der Nutzer hat die Zusammenfassung nicht freigegeben.',
+    summary_no_text: 'Zu dieser Ressource liegt kein auswertbarer Text für eine Zusammenfassung vor.',
+    summary_unusable:
+        'Die lokal erstellte Zusammenfassung hat die lokale Prüfung nicht bestanden und wurde verworfen. ' +
+        'Sie wird nicht zur Freigabe vorgelegt.'
 };
 
 export const MAX_SAFE_LABEL_CHARS = 80;
+
+/**
+ * Upper bound on a summary. A summary is context, not a copy: a cap is what
+ * keeps `summarize_resource` from becoming a way to read a document out of the
+ * gateway one approval at a time.
+ */
+export const MAX_SUMMARY_CHARS = 1800;
 
 /** Resource shape crossing the boundary: a handle, a designation, a kind. */
 export interface PublicResourceRef {
@@ -116,6 +155,24 @@ export interface PublicActionState {
     action_id: string;
     status: ActionStatus;
     reason?: ActionStatusReason;
+    note: string;
+}
+
+/**
+ * A released summary on its way to the agent.
+ *
+ * `summary` is the only field in this file whose contents the gateway did not
+ * choose from a closed catalogue. It is here because a human read those exact
+ * characters and pressed the button, and it still passes `EgressGuard` on the
+ * way out like everything else.
+ */
+export interface PublicSummary {
+    action_id: string;
+    status: ActionStatus;
+    /** Present only when the user released it. */
+    summary?: string;
+    /** Which categories of detail were removed, so the agent knows what it lacks. */
+    redactions?: RedactionPlaceholder[];
     note: string;
 }
 
@@ -205,6 +262,95 @@ export function sanitiseLabel(raw: string): string {
     return `${collapsed.slice(0, MAX_SAFE_LABEL_CHARS - 1).trimEnd()}…`;
 }
 
+/**
+ * Normalises a model-written summary into the exact characters that would be
+ * shown and, later, sent.
+ *
+ * Shown and sent must be the same string, so this runs once, before the text is
+ * ever stored — not again on the way out. Control characters go rather than get
+ * escaped, for the same reason as in an outgoing mail body: they are invisible
+ * in the approval view, and an approval screen whose job is to display precisely
+ * what leaves cannot contain characters the reader has no way of seeing.
+ */
+export function sanitiseSummary(raw: string): string {
+    const normalised = raw
+        .replace(/\r\n?/g, '\n')
+        // Everything in Unicode’s "other" category except the newline: control
+        // characters, but also zero-width and bidi-override characters, which could
+        // make the approval view render something other than what is sent.
+        .replace(/[^\P{C}\n]/gu, '')
+        .replace(/[ \t]+$/gm, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    if (normalised.length <= MAX_SUMMARY_CHARS) {
+        return normalised;
+    }
+    return `${normalised.slice(0, MAX_SUMMARY_CHARS - 1).trimEnd()}…`;
+}
+
+/** Which of the allowed placeholders a summary actually uses, in fixed order. */
+export function placeholdersIn(summary: string): RedactionPlaceholder[] {
+    return REDACTION_PLACEHOLDERS.filter((placeholder) => summary.includes(`[${placeholder}]`));
+}
+
+/**
+ * Something in a summary that looks like it should have been redacted and was
+ * not. Local only: it exists to be put in front of the user, never to be
+ * reported to the agent.
+ */
+export interface ResidualFinding {
+    /** Short German label of what the pattern looks like. */
+    kind: string;
+    /** The matching text, for the approval view to point at. */
+    sample: string;
+}
+
+/**
+ * Patterns that a redacted summary should no longer contain.
+ *
+ * This is a second opinion, not a filter. The local model was asked to remove
+ * these things and says it did; a regex that agrees proves nothing, but a regex
+ * that disagrees is worth putting in front of the person about to release the
+ * text. Findings are therefore surfaced loudly in the approval view and never
+ * used to auto-approve anything.
+ */
+const RESIDUAL_PATTERNS: Array<[string, RegExp]> = [
+    ['E-Mail-Adresse', /[^\s@]+@[^\s@]+\.[A-Za-z]{2,}/],
+    ['IBAN', /\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/],
+    // Anchored on `+` or a leading zero rather than on "digits, separator,
+    // digits": the loose form flags any sentence with two numbers in it, and a
+    // detector that cries wolf is one the user learns to click past.
+    ['Telefonnummer', /(?:\+|\b0)\d[\d\s/()-]{6,}\d/],
+    ['Geldbetrag', /\d[\d.]*,\d{2}\s?(?:€|EUR)|(?:€|EUR)\s?\d/],
+    // A long unbroken run, or groups joined by punctuation — file numbers,
+    // customer numbers and precise dates look like this; prose does not.
+    ['Nummer oder Kennzeichen', /\b\d{6,}\b|\b\d{2,}[./-]\d{2,}(?:[./-]\d{2,})?\b/]
+];
+
+/**
+ * Unknown bracketed tokens. The model is told to use the closed placeholder set;
+ * anything else in brackets is either an invented placeholder or, worse, real
+ * content the model bracketed instead of removing.
+ */
+const BRACKETED = /\[([^\]\n]{1,80})\]/g;
+
+export function findResiduals(summary: string): ResidualFinding[] {
+    const findings: ResidualFinding[] = [];
+    for (const [kind, pattern] of RESIDUAL_PATTERNS) {
+        const match = pattern.exec(summary);
+        if (match) {
+            findings.push({ kind, sample: match[0].trim().slice(0, 60) });
+        }
+    }
+    for (const match of summary.matchAll(BRACKETED)) {
+        const token = match[1]!;
+        if (!(REDACTION_PLACEHOLDERS as readonly string[]).includes(token)) {
+            findings.push({ kind: 'unbekannter Platzhalter', sample: match[0].slice(0, 60) });
+        }
+    }
+    return findings;
+}
+
 /** Builds the public view of a stored reference. */
 export function publicResourceRef(record: ResourceRecord): PublicResourceRef {
     return {
@@ -240,17 +386,26 @@ export function publicActionState(record: ActionRecord): PublicActionState {
     return state;
 }
 
+/**
+ * The note tells the agent what to do next, so it has to distinguish the two
+ * kinds of action: an approved transfer is finished business, while an approved
+ * summary is a text now waiting to be collected.
+ */
 function noteCodeForAction(record: ActionRecord): EgressNoteCode {
+    const summarising = record.plan.kind === 'summarize_resource';
     switch (record.status) {
         case 'awaiting_local_approval':
-            return 'awaiting_local_approval';
+            return summarising ? 'summary_awaiting_approval' : 'awaiting_local_approval';
         case 'selection_required':
             return 'selection_required';
         case 'executing':
             return 'action_executing';
         case 'completed':
-            return 'action_completed';
+            return summarising ? 'summary_released' : 'action_completed';
         case 'rejected':
+            if (summarising) {
+                return 'summary_rejected';
+            }
             return record.statusReason === 'user_discarded' ? 'action_discarded' : 'action_rejected';
         case 'expired':
             return 'action_expired';
@@ -274,6 +429,26 @@ function failureNote(reason: ActionStatusReason | undefined): EgressNoteCode {
         default:
             return 'action_failed';
     }
+}
+
+/**
+ * Builds the answer to `get_summary`.
+ *
+ * The text is only ever attached for a released summary. Every other status
+ * yields the same shape with the field simply absent — not an empty string, not
+ * a partial text, and not an explanation of what the summary would have said.
+ */
+export function publicSummary(record: ActionRecord): PublicSummary {
+    const state: PublicSummary = {
+        action_id: record.actionId,
+        status: record.status,
+        note: EGRESS_NOTES[noteCodeForAction(record)]
+    };
+    if (record.status === 'completed' && record.plan.kind === 'summarize_resource') {
+        state.summary = record.plan.summary;
+        state.redactions = record.plan.redactions;
+    }
+    return state;
 }
 
 export function note(code: EgressNoteCode): string {

@@ -444,13 +444,22 @@ function toHistoryEntry(record: ActionRecord): ApiHistoryEntry {
         decidedAt: record.decidedAt,
         executedAt: record.executedAt,
         localOutcome: record.localOutcome,
-        plan: {
-            targetId: record.plan.targetId,
-            recipientDisplay: record.plan.recipientDisplay,
-            dynamicRecipient: record.plan.dynamicRecipient,
-            subject: record.plan.subject,
-            attachments: record.plan.attachments
-        },
+        plan:
+            record.plan.kind === 'summarize_resource'
+                ? {
+                      kind: 'summarize_resource',
+                      summaryChars: record.plan.summary.length,
+                      summarySha256: record.plan.summarySha256,
+                      redactions: record.plan.redactions
+                  }
+                : {
+                      kind: 'send_resource',
+                      targetId: record.plan.targetId,
+                      recipientDisplay: record.plan.recipientDisplay,
+                      dynamicRecipient: record.plan.dynamicRecipient,
+                      subject: record.plan.subject,
+                      attachments: record.plan.attachments
+                  },
         judgement: record.judgement
     };
 }

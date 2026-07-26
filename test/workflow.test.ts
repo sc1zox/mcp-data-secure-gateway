@@ -41,6 +41,42 @@ async function prepare(
     return prepared.action_id;
 }
 
+describe('Grundlage der Egress-Bewertung', () => {
+    it('gibt dem Modell den Volltext des Dokuments, nicht den Suchauszug', async () => {
+        const created = await harness();
+        created.source.text = 'Prüfungsumschlag: Einführung in Künstliche Intelligenz SS25.';
+        await prepare(created);
+
+        assert.equal(created.egressEvidence.length, 1);
+        assert.deepEqual(created.egressEvidence[0], {
+            kind: 'fulltext',
+            text: created.source.text
+        });
+        // The excerpt from the search is not what was judged.
+        assert.notEqual(created.egressEvidence[0]?.text, makeResource().excerpt);
+    });
+
+    it('fällt auf den Auszug zurück, wenn die Quelle keinen Volltext liefert', async () => {
+        const created = await harness();
+        created.source.text = undefined;
+        await prepare(created);
+
+        assert.deepEqual(created.egressEvidence[0], {
+            kind: 'excerpt',
+            text: makeResource().excerpt
+        });
+    });
+
+    it('meldet ehrlich, wenn es gar nichts zu lesen gab, statt es zu verschweigen', async () => {
+        // A scan without OCR: no text, and the search left no excerpt either.
+        const created = await harness({ resources: [makeResource({ excerpt: undefined })] });
+        created.source.text = undefined;
+        await prepare(created);
+
+        assert.deepEqual(created.egressEvidence[0], { kind: 'none' });
+    });
+});
+
 describe('Betreff und Text vom Agenten', () => {
     const SUBJECT = 'Bewerbung als Entwickler';
     const BODY = 'Sehr geehrte Damen und Herren,\n\nanbei meine Unterlagen.\n\nMit freundlichen Grüßen';
@@ -50,7 +86,7 @@ describe('Betreff und Text vom Agenten', () => {
         const actionId = await prepare(created, { subject: SUBJECT, body: BODY });
 
         const view = created.orchestrator.localAction(actionId);
-        assert.ok(view);
+        assert.ok(view?.kind === 'send_resource');
         assert.equal(view.egress.subject, SUBJECT);
         assert.equal(view.egress.body, BODY);
         assert.deepEqual(view.egress.authoredByAgent, { subject: true, body: true });
@@ -70,7 +106,7 @@ describe('Betreff und Text vom Agenten', () => {
         const actionId = await prepare(created);
 
         const view = created.orchestrator.localAction(actionId);
-        assert.ok(view);
+        assert.ok(view?.kind === 'send_resource');
         assert.deepEqual(view.egress.authoredByAgent, { subject: false, body: false });
         assert.match(view.egress.body, /Local Trust Gateway/);
         assert.match(view.egress.body, new RegExp(PURPOSE));
@@ -83,7 +119,7 @@ describe('Betreff und Text vom Agenten', () => {
         });
 
         const view = created.orchestrator.localAction(actionId);
-        assert.ok(view);
+        assert.ok(view?.kind === 'send_resource');
         assert.doesNotMatch(view.egress.subject ?? '', /\n|\r/);
     });
 
@@ -100,7 +136,7 @@ describe('Betreff und Text vom Agenten', () => {
         const actionId = await prepare(created, { body: BODY, note: 'nur intern gedacht' });
 
         const view = created.orchestrator.localAction(actionId);
-        assert.ok(view);
+        assert.ok(view?.kind === 'send_resource');
         assert.equal(view.egress.body, BODY);
     });
 });
@@ -110,7 +146,7 @@ describe('Auf die Entscheidung des Nutzers warten', () => {
         const created = await harness();
         const actionId = await prepare(created);
         const view = created.orchestrator.localAction(actionId);
-        assert.ok(view);
+        assert.ok(view?.kind === 'send_resource');
 
         const waiting = created.orchestrator.awaitActionDecision(actionId, 10);
         await created.orchestrator.approveAction(actionId, view.bindingHash);
@@ -244,7 +280,7 @@ describe('Andere Ressource wählen', () => {
         const created = await harness({ resources: twoDocuments });
         const actionId = await prepare(created);
         const view = created.orchestrator.localAction(actionId);
-        assert.ok(view);
+        assert.ok(view?.kind === 'send_resource');
 
         await created.orchestrator.requestReselection(actionId);
 

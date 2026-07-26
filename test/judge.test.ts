@@ -164,6 +164,7 @@ describe('Judge: Validierung der Modellantwort', () => {
         const audit = await makeAudit();
         const { client } = stubClient(
             JSON.stringify({
+                contentChecked: true,
                 purposeMatch: false,
                 confidence: 0.4,
                 sensitivity: 'high',
@@ -176,6 +177,7 @@ describe('Judge: Validierung der Modellantwort', () => {
 
         const assessment = await judge.assessEgress(
             makeResource(),
+            { kind: 'fulltext', text: 'Der vollständige Text des Dokuments.' },
             'Ablage',
             'Private E-Mail',
             'Eigenes Postfach',
@@ -185,6 +187,89 @@ describe('Judge: Validierung der Modellantwort', () => {
         assert.equal(assessment.purposeMatch, false);
         assert.equal(assessment.judgement.uncertainties.length, 2);
         assert.match(assessment.judgement.uncertainties.join(' '), /manuelle Prüfung/);
+    });
+
+    it('hält fest, worauf die Bewertung beruht', async () => {
+        const audit = await makeAudit();
+        const { client, prompts } = stubClient(
+            JSON.stringify({
+                contentChecked: true,
+                purposeMatch: true,
+                confidence: 0.9,
+                sensitivity: 'low',
+                reasoning: 'Der Text nennt die gesuchte Vorlesung.',
+                uncertainties: [],
+                recommendManualReview: false
+            })
+        );
+        const judge = new Judge(client, audit);
+
+        const text = 'Prüfungsumschlag: Einführung in Künstliche Intelligenz SS25.';
+        const assessment = await judge.assessEgress(
+            makeResource(),
+            { kind: 'fulltext', text },
+            'Lernen',
+            'Private E-Mail',
+            'Eigenes Postfach',
+            'qry_test'
+        );
+
+        assert.deepEqual(assessment.judgement.basis, {
+            kind: 'fulltext',
+            textChars: text.length,
+            contentChecked: true
+        });
+        // The text has to actually be in the prompt, otherwise the basis records
+        // something that never reached the model.
+        assert.ok(prompts[0]?.includes(text));
+        assert.equal(assessment.recommendManualReview, false);
+    });
+
+    it('verwirft eine behauptete Inhaltsprüfung, wenn gar kein Text vorlag', async () => {
+        const audit = await makeAudit();
+        const { client, prompts } = stubClient(
+            JSON.stringify({
+                contentChecked: true,
+                purposeMatch: true,
+                confidence: 0.95,
+                sensitivity: 'medium',
+                reasoning: 'Der Titel nennt eine Altklausur, das passt zum Zweck.',
+                uncertainties: [],
+                recommendManualReview: false
+            })
+        );
+        const judge = new Judge(client, audit);
+
+        const assessment = await judge.assessEgress(
+            makeResource({ excerpt: undefined }),
+            { kind: 'none' },
+            'Lernen',
+            'Private E-Mail',
+            'Eigenes Postfach',
+            'qry_test'
+        );
+
+        // The model's confident answer is kept as its reasoning, but every
+        // conclusion that would have to rest on the content is withdrawn.
+        assert.equal(assessment.judgement.basis?.contentChecked, false);
+        assert.equal(assessment.judgement.basis?.kind, 'none');
+        assert.equal(assessment.judgement.basis?.textChars, 0);
+        assert.equal(assessment.purposeMatch, false);
+        assert.equal(assessment.recommendManualReview, true);
+        assert.match(assessment.judgement.uncertainties.join(' '), /kein auswertbarer Text/);
+        // And the prompt said so, rather than leaving the gap to be inferred.
+        assert.match(prompts[0] ?? '', /Dokumenttext: NICHT VERFÜGBAR/);
+    });
+
+    it('markiert einen Kandidaten ohne Inhalt im Auswahl-Prompt', () => {
+        const fence = createFence();
+        const prompt = buildSelectionUserPrompt(fence, 'altklausur', 'Lernen', [
+            makeResource({ excerpt: undefined }),
+            makeResource({ excerpt: 'Einführung in Künstliche Intelligenz SS25' })
+        ]);
+
+        assert.match(prompt, /Inhaltsauszug: NICHT VERFÜGBAR/);
+        assert.ok(prompt.includes('Einführung in Künstliche Intelligenz SS25'));
     });
 });
 

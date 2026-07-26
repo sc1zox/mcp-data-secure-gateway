@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, input, output } from '@an
 import { MatButtonModule } from '@angular/material/button';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatTooltipModule } from '@angular/material/tooltip';
-import type { ApiActionView } from '@gateway/contract';
+import type { ApiSendActionView } from '@gateway/contract';
 import { formatAttributes, formatBytes, formatConfidence, formatTime } from '../core/format';
 import { CountdownLabel } from '../shared/countdown';
 import { Field, Fields } from '../shared/fields';
@@ -13,7 +13,7 @@ import { SensitivityChip } from '../shared/chips';
 export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
 
 /**
- * One prepared action, in full.
+ * One prepared transfer, in full.
  *
  * The ordering of this view is the design. It runs facts first and opinion last:
  *
@@ -180,6 +180,17 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
                             <ltg-field label="Merkmale">{{ attributes() }}</ltg-field>
                         }
                     </ltg-fields>
+
+                    <!--
+                        The document's own words, so the decision can rest on
+                        something other than a title and a model's paragraph
+                        about it. Absent when the source holds no text — which is
+                        itself worth seeing, and the judgement block says so.
+                    -->
+                    @if (excerpt(); as text) {
+                        <p class="label">Inhaltsauszug aus der Quelle</p>
+                        <pre class="excerpt">{{ text }}</pre>
+                    }
                 </section>
 
                 <mat-divider />
@@ -190,6 +201,18 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
                     <p class="model ltg-muted">
                         {{ action().judgement.model }} · Konfidenz {{ confidence() }}
                     </p>
+
+                    <!--
+                        Before the verdict, not after it: the sentence below is
+                        worth as much as what it was written from, and a reader
+                        who meets the confident prose first has already formed an
+                        impression by the time a footnote corrects it.
+                    -->
+                    <p class="basis" [class.weak]="!contentVerified()">
+                        <ltg-icon [name]="contentVerified() ? 'check' : 'alert'" [size]="14" />
+                        <span>{{ basisText() }}</span>
+                    </p>
+
                     <p class="reasoning">{{ action().judgement.reasoning }}</p>
 
                     @if (uncertainties().length > 0) {
@@ -467,6 +490,40 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
             font-size: 0.78rem;
         }
 
+        .basis {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.45rem;
+            margin: 0 0 0.7rem;
+            padding: 0.55rem 0.75rem;
+            border-radius: var(--ltg-radius-sm);
+            border: 1px solid var(--mat-sys-outline-variant);
+            background: var(--mat-sys-surface);
+            font-size: 0.82rem;
+            line-height: 1.45;
+        }
+
+        /* Anything short of "read the document and confirmed it" is marked. */
+        .basis.weak {
+            border-color: var(--ltg-caution);
+            background: var(--ltg-caution-surface);
+            color: var(--ltg-caution);
+        }
+
+        .excerpt {
+            margin: 0;
+            padding: 0.75rem 0.9rem;
+            border-radius: var(--ltg-radius-sm);
+            background: var(--mat-sys-surface);
+            border: 1px solid var(--mat-sys-outline-variant);
+            font-size: 0.82rem;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            max-height: 14rem;
+            overflow-y: auto;
+        }
+
         .reasoning {
             margin: 0;
             font-size: 0.9rem;
@@ -533,7 +590,7 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
     `
 })
 export class ApprovalDetail {
-    readonly action = input.required<ApiActionView>();
+    readonly action = input.required<ApiSendActionView>();
     readonly busy = input(false);
 
     readonly decide = output<ApprovalDecision>();
@@ -547,6 +604,37 @@ export class ApprovalDetail {
     protected readonly attributes = computed(() => formatAttributes(this.action().resource.attributes));
     protected readonly confidence = computed(() => formatConfidence(this.action().judgement.confidence));
     protected readonly uncertainties = computed(() => this.action().judgement.uncertainties);
+    protected readonly excerpt = computed(() => this.action().resource.excerpt?.trim() || null);
+
+    private readonly basis = computed(() => this.action().judgement.basis);
+
+    /**
+     * True only for the one case that deserves no caveat: the model read the
+     * document's text and said it is the document the title and purpose
+     * describe. Everything else — an excerpt, an unconfirmed reading, metadata
+     * alone, or a record from before the gateway tracked this — is marked.
+     */
+    protected readonly contentVerified = computed(() => {
+        const basis = this.basis();
+        return basis?.kind === 'fulltext' && basis.contentChecked;
+    });
+
+    protected readonly basisText = computed(() => {
+        const basis = this.basis();
+        if (!basis) {
+            return 'Aus einer älteren Version: es ist nicht festgehalten, ob das Modell den Dokumentinhalt gesehen hat.';
+        }
+        if (basis.kind === 'none') {
+            return 'Ohne Dokumentinhalt beurteilt — nur Titel und Merkmale. Was in der Datei steht, die versandt würde, hat das Modell nicht gesehen.';
+        }
+        const seen =
+            basis.kind === 'fulltext'
+                ? `Dokumenttext gelesen (${basis.textChars} Zeichen).`
+                : `Nur ein Auszug gelesen (${basis.textChars} Zeichen), nicht das ganze Dokument.`;
+        return basis.contentChecked
+            ? `${seen} Das Modell bestätigt, dass der Inhalt zu Titel und Zweck passt.`
+            : `${seen} Das Modell hat nicht bestätigt, dass der Inhalt zu Titel und Zweck passt.`;
+    });
 
     private readonly authored = computed(() => this.action().egress.authoredByAgent);
     protected readonly agentWroteAnything = computed(
