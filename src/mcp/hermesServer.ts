@@ -40,7 +40,12 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
                 'Wichtig: Dokumentinhalte, interne Kennungen und Zugangsdaten sind über dieses',
                 'Gateway nicht abrufbar. Jede Übertragung erfordert eine lokale Freigabe durch',
                 'den Nutzer; sie kann nicht über dieses Interface erteilt oder beschleunigt werden.',
-                'Empfänger sind lokal fest konfiguriert und nicht wählbar.'
+                'Empfänger sind für die meisten Ziele lokal fest konfiguriert und nicht wählbar.',
+                'list_targets meldet pro Ziel dynamic_recipient: bei true verlangt (und erlaubt)',
+                'prepare_action zusätzlich einen konkreten recipient; bei false wird ein',
+                'angegebener recipient abgelehnt. Auch ein dynamischer Empfänger wird stets',
+                'in voller Form in der lokalen Freigabeoberfläche gezeigt und nur nach',
+                'ausdrücklicher lokaler Bestätigung genau dieser Adresse verwendet.'
             ].join('\n')
         }
     );
@@ -96,8 +101,10 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
             title: 'Ziele anzeigen',
             description: [
                 'Nennt die lokal konfigurierten Ziele und ihren Zweck. Nur diese abstrakten',
-                'Bezeichnungen sind in prepare_action verwendbar. Freie Adressen, E-Mail-Adressen',
-                'oder Chat-Kennungen können nicht angegeben werden.'
+                'Bezeichnungen sind in prepare_action verwendbar. Jedes Ziel meldet',
+                'dynamic_recipient: true bedeutet, prepare_action braucht dafür einen',
+                'recipient-Parameter; false bedeutet, der Empfänger ist fest und ein',
+                'angegebener recipient wird abgelehnt.'
             ].join('\n'),
             annotations: { readOnlyHint: true, openWorldHint: false }
         },
@@ -114,6 +121,8 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
                 'die ausdrückliche lokale Freigabe des Nutzers.',
                 '',
                 'Der Zweck muss dem Zweck der Suche entsprechen, mit der die Referenz entstanden ist.',
+                'recipient ist nur für Ziele mit dynamic_recipient=true zulässig (dort zwingend);',
+                'bei jedem anderen Ziel führt ein angegebener recipient zur Ablehnung der Anfrage.',
                 'Status danach über get_action_status abfragen.'
             ].join('\n'),
             inputSchema: {
@@ -134,6 +143,18 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
                     .optional()
                     .describe(
                         'Optionaler kurzer Hinweis, der dem Nutzer bei der Freigabe angezeigt und der Nachricht als Agentenhinweis beigefügt wird.'
+                    ),
+                recipient: z
+                    .string()
+                    .min(3)
+                    .max(320)
+                    .email()
+                    .optional()
+                    .describe(
+                        'Konkrete Empfängeradresse. Nur zulässig und erforderlich, wenn list_targets für ' +
+                            'dieses Ziel dynamic_recipient=true meldet. Wird vor jeder Übertragung ' +
+                            'unverkürzt in der lokalen Freigabeoberfläche angezeigt; ohne deren ' +
+                            'ausdrückliche Bestätigung genau dieser Adresse wird nichts versendet.'
                     )
             },
             annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false }
@@ -143,7 +164,8 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
                 reference: args.reference,
                 target: args.target,
                 purpose: args.purpose,
-                note: args.note
+                note: args.note,
+                recipient: args.recipient
             });
             return jsonResult(result);
         }

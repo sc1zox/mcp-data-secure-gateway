@@ -15,7 +15,7 @@ Hermes  ──(abstrahierte Anfrage)──►  Local Trust Gateway
                                        ├── private Quellen        (Paperless über MCP)
                                        ├── lokales Sprachmodell   (Qwen 3.5 9B über Ollama)
                                        ├── lokale Freigabe        (Browser, nur Loopback)
-                                       └── erlaubte Ziele         (private_mail, private_telegram)
+                                       └── erlaubte Ziele         (private_mail, private_telegram, optional dynamische Ziele)
 ```
 
 ## Was Hermes sieht — und was nicht
@@ -132,7 +132,7 @@ Handentscheidung des Nutzers hat danach Vorrang vor einer neuen Modellbewertung.
 | 3 | Keine Rohdaten an Hermes | `core/egress.ts` baut jede Antwort feldweise nach Whitelist |
 | 4 | Nur opake Referenzen | `util/ids.ts` (CSPRNG), Auflösung ausschließlich über `ReferenceStore` |
 | 5 | Kennungen und Zugangsdaten bleiben lokal | `EgressGuard` prüft jede Ausgabe gegen registrierte Geheimnisse und Struktur­muster (URLs, Pfade, API-Routen) |
-| 6 | Nur lokal konfigurierte Ziele | `EgressTarget.deliver()` nimmt **keinen** Empfänger an; das Ziel ist Feld der Instanz |
+| 6 | Nur lokal konfigurierte Ziele | `EgressTarget.deliver()` ignoriert `recipient`, außer die Instanz ist explizit mit `allowDynamicRecipient` konfiguriert; nur dort verlangt und verwendet `prepare_action` eine Adresse, stets unverkürzt gezeigt und einzeln freigegeben |
 | 7 | Jede Übertragung braucht eine lokale Freigabe | `Orchestrator.execute()` läuft ausschließlich aus `approveAction()` |
 | 8 | Das lokale Modell kann nichts übertragen | der Judge liefert nur validiertes JSON; er hat keine Referenz auf ein Ziel |
 | 9 | Bei Mehrdeutigkeit kein automatisches Handeln | `ambiguous` und ein außerhalb des Bereichs liegender Kandidat führen beide zu `selection_required` |
@@ -159,6 +159,29 @@ Zitat; und der einzige Rückkanal des Modells ist ein festes JSON-Objekt. Ein vo
 übernommenes Modell kann damit einen falschen Kandidaten vorschlagen — es kann nichts versenden,
 und der Mensch entscheidet weiterhin.
 
+## Dynamische Empfänger (Sonderfall eines Ziels)
+
+Die meisten Ziele haben, wie in Invariante 6 beschrieben, eine Adresse, die ausschließlich aus der
+Konfiguration kommt. Für Fälle mit wechselndem Empfänger — das Musterbeispiel ist eine Bewerbung an
+`jobs@firma-a.de`, `recruiting@firma-b.de` usw. — kann ein SMTP-Ziel stattdessen mit
+`allowDynamicRecipient: true` konfiguriert werden (siehe `job_application_mail` in
+`config/gateway.config.example.json`). Für ein solches Ziel gilt:
+
+- `list_targets` meldet für dieses Ziel `dynamic_recipient: true`.
+- `prepare_action` verlangt dafür einen `recipient`-Parameter mit einer plausiblen Adresse; bei
+  jedem anderen Ziel wird ein angegebener `recipient` abgelehnt.
+- Die lokale Freigabeansicht zeigt die Adresse unverkürzt und optisch hervorgehoben, weil sie —
+  anders als bei einem fest konfigurierten Ziel — nicht aus der lokalen Konfiguration stammt,
+  sondern vom Agenten vorgeschlagen wurde.
+- Der Bindungs-Hash deckt die Adresse mit ab: Eine Freigabe gilt für genau diese Adresse, nicht für
+  „irgendeine, die der Agent später nennt“.
+- Ohne lokale Bestätigung genau dieser Adresse wird nichts versendet — das Freigabe-Erfordernis aus
+  Invariante 7 gilt unverändert.
+
+Das verschiebt die Garantie für dieses eine, bewusst geöffnete Ziel von „strukturell unmöglich,
+woanders hinzuschicken“ auf „der Nutzer sieht die exakte Adresse vor jeder Freigabe“ — ein
+Trade-off, der nur für Ziele mit `allowDynamicRecipient` gilt und niemals automatisch greift.
+
 ## Erweiterbarkeit
 
 **Neue Quelle** (z. B. Baikal/DAV): `PrivateSource` implementieren und einen Fall in
@@ -166,7 +189,9 @@ und der Mensch entscheidet weiterhin.
 wissen, woher eine Ressource stammt. Die Schnittstelle kennt bewusst kein Schreiben.
 
 **Neues Ziel**: `EgressTarget` implementieren und in `targets/registry.ts` ergänzen. Der Empfänger
-gehört in die Konfiguration und in die Instanz, niemals in die Signatur von `deliver`.
+gehört in die Konfiguration und in die Instanz; die Signatur von `deliver` trägt zwar ein optionales
+`recipient`-Feld, aber ein Ziel, das nicht ausdrücklich für einen dynamischen Empfänger gebaut ist,
+muss es ignorieren und seine eigene, feste Adresse verwenden.
 
 ## Datenhaltung
 
@@ -216,5 +241,6 @@ nicht Interna. `test/helpers.ts` stellt Quelle, Ziel und lokales Modell als Doub
 ## Nicht Bestandteil
 
 Einrichtung oder Änderung von Hermes, Ollama, Paperless, des Paperless-MCP-Servers oder von Baikal;
-Netzwerk- und Deployment-Konfiguration; frei wählbare Empfänger; Mehrbenutzerbetrieb; automatische
-Freigaben; Änderungen oder Löschungen in privaten Quellen; die DAV-Anbindung selbst.
+Netzwerk- und Deployment-Konfiguration; Empfänger außerhalb eines dafür ausdrücklich mit
+`allowDynamicRecipient` konfigurierten Ziels; Mehrbenutzerbetrieb; automatische Freigaben;
+Änderungen oder Löschungen in privaten Quellen; die DAV-Anbindung selbst.

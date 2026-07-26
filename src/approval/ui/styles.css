@@ -525,6 +525,17 @@ button.btn-danger:hover:not(:disabled) {
     font-size: 0.78rem;
 }
 
+.warning-strip.is-danger {
+    border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
+    font-weight: 600;
+}
+
+.warning-strip.is-danger::before {
+    background: var(--danger);
+    color: var(--danger-contrast);
+}
+
 /* ---------------------------------------------------------------------- tables */
 
 .table-wrap {

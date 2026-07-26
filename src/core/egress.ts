@@ -34,6 +34,8 @@ export type EgressNoteCode =
     | 'reference_expired'
     | 'target_unknown'
     | 'target_unavailable'
+    | 'recipient_required'
+    | 'recipient_not_allowed'
     | 'attachment_too_large'
     | 'awaiting_local_approval'
     | 'action_executing'
@@ -69,6 +71,9 @@ export const EGRESS_NOTES: Record<EgressNoteCode, string> = {
     reference_expired: 'Die Referenz ist abgelaufen. Eine neue Suche ist nötig.',
     target_unknown: 'Dieses Ziel ist nicht konfiguriert.',
     target_unavailable: 'Das Ziel ist derzeit nicht verfügbar.',
+    recipient_required:
+        'Dieses Ziel erfordert eine gültige Empfängeradresse in prepare_action; sie fehlt oder ist ungültig.',
+    recipient_not_allowed: 'Für dieses Ziel ist kein Empfänger angebbar; er ist lokal fest konfiguriert.',
     attachment_too_large: 'Die Ressource überschreitet die Größenbegrenzung dieses Ziels.',
     awaiting_local_approval: 'Die Aktion ist vorbereitet und wartet auf die lokale Freigabe.',
     action_executing: 'Die Aktion wurde freigegeben und wird ausgeführt.',
@@ -103,6 +108,8 @@ export interface PublicTarget {
     target: string;
     purpose: string;
     accepts_attachments: boolean;
+    /** True when `prepare_action` for this target requires a `recipient`. */
+    dynamic_recipient: boolean;
 }
 
 export interface PublicActionState {
@@ -211,7 +218,8 @@ export function publicTarget(descriptor: TargetDescriptor): PublicTarget {
     return {
         target: descriptor.id,
         purpose: descriptor.purpose,
-        accepts_attachments: descriptor.supportsAttachments
+        accepts_attachments: descriptor.supportsAttachments,
+        dynamic_recipient: descriptor.dynamicRecipient
     };
 }
 

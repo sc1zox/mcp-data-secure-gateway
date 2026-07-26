@@ -3,11 +3,14 @@ import type { TargetDescriptor } from '../core/types.js';
 /**
  * Contract for an egress destination.
  *
- * The signature is the security property: `deliver` takes a subject, a body and
- * attachments — and no recipient. Where the data goes was decided when the
- * config file was written and is baked into the instance (invariant 6). There is
- * no code path, from Hermes or from the local model, that can name a different
- * address.
+ * `deliver` takes a subject, a body, attachments — and an optional `recipient`
+ * that exists solely for the small set of targets built with a dynamic
+ * recipient (invariant 6). A target that was not explicitly configured that
+ * way (`describe().dynamicRecipient === false`) must ignore `payload.recipient`
+ * entirely and use its own configured, fixed destination; nothing upstream of
+ * a target implementation can force it to honour a recipient it wasn't built
+ * to accept. Where a fixed destination points was decided when the config file
+ * was written and is baked into the instance.
  */
 export interface EgressTarget {
     readonly id: string;
@@ -21,6 +24,8 @@ export interface EgressPayload {
     subject?: string;
     body: string;
     attachments: EgressAttachment[];
+    /** Only meaningful for a target whose descriptor sets `dynamicRecipient: true`. */
+    recipient?: string;
 }
 
 export interface EgressAttachment {

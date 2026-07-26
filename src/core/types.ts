@@ -114,13 +114,23 @@ export interface PlannedAttachment {
 
 /**
  * The frozen plan: precisely what leaves the machine if the user approves.
- * Every field here is covered by the binding hash.
+ * Every field here is covered by the binding hash — including `recipientAddress`,
+ * so an approval binds to one exact address and cannot be replayed against another.
  */
 export interface ActionPlan {
     kind: ActionKind;
     targetId: string;
-    /** Redacted destination as shown locally, e.g. `c***@example.org`. */
+    /**
+     * Destination as shown locally. Masked (e.g. `c***@example.org`) for a
+     * fixed target; the full, unmasked address for a dynamic-recipient target,
+     * because the point there is that the user reads the exact address before
+     * approving.
+     */
     recipientDisplay: string;
+    /** Whether this action's target let the request name the recipient. */
+    dynamicRecipient: boolean;
+    /** The literal address to deliver to. Only set when `dynamicRecipient` is true. */
+    recipientAddress?: string;
     subject?: string;
     body: string;
     attachments: PlannedAttachment[];
@@ -202,7 +212,7 @@ export interface SelectionCandidate {
     resource: InternalResource;
 }
 
-/** A configured, fixed egress destination. */
+/** A configured egress destination — fixed, or dynamic within its own scope. */
 export interface TargetDescriptor {
     /** Abstract name Hermes uses, e.g. `private_mail`. */
     id: string;
@@ -210,8 +220,17 @@ export interface TargetDescriptor {
     label: string;
     /** What this target is for; Hermes may read this to pick sensibly. */
     purpose: string;
-    /** Redacted destination for the approval view. */
+    /**
+     * Redacted destination for the approval view, or a placeholder note when
+     * the target is dynamic-recipient (there is nothing fixed to redact).
+     */
     recipientDisplay: string;
+    /**
+     * True only for the small, explicit set of targets configured with
+     * `allowDynamicRecipient`. Tells Hermes it must (and may) supply a
+     * `recipient` in `prepare_action`; every other target rejects one.
+     */
+    dynamicRecipient: boolean;
     /** Whether the target can carry file attachments. */
     supportsAttachments: boolean;
     /** Upper bound on attachment size in bytes, if the transport imposes one. */

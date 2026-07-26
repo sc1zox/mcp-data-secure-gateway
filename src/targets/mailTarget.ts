@@ -12,11 +12,17 @@ import {
 } from './target.js';
 
 /**
- * The `private_mail` target: one fixed recipient, configured locally.
+ * An SMTP target.
  *
- * `this.config.to` is read directly in `deliver` and never taken from the
- * payload, so no amount of creative input from Hermes or a document can redirect
- * a message.
+ * By default this is exactly the fixed-recipient target invariant 6 describes:
+ * `this.config.to` is read directly in `deliver` and the payload's `recipient`
+ * is never even looked at, so no amount of creative input from Hermes or a
+ * document can redirect a message.
+ *
+ * With `allowDynamicRecipient` set, this instance is the one deliberate
+ * exception: the address comes from the approved action instead, but never
+ * without having been shown, unmasked, in the local approval view and approved
+ * there — see `Orchestrator.prepareAction`.
  */
 export class MailTarget implements EgressTarget {
     readonly id: string;
@@ -48,7 +54,10 @@ export class MailTarget implements EgressTarget {
             id: this.config.id,
             label: this.config.label,
             purpose: this.config.purpose,
-            recipientDisplay: maskEmail(this.config.to),
+            recipientDisplay: this.config.allowDynamicRecipient
+                ? '(vom Nutzer je Aktion bestätigt)'
+                : maskEmail(this.config.to!),
+            dynamicRecipient: this.config.allowDynamicRecipient,
             supportsAttachments: true,
             maxAttachmentBytes: this.config.maxAttachmentBytes
         };
@@ -70,11 +79,16 @@ export class MailTarget implements EgressTarget {
                 `Anhänge (${total} Bytes) überschreiten das Limit von ${this.config.maxAttachmentBytes} Bytes.`
             );
         }
+        // A target not built for a dynamic recipient never reads payload.recipient,
+        // no matter what it contains — the address only ever comes from config.
+        const recipient = this.config.allowDynamicRecipient ? payload.recipient : this.config.to;
+        if (!recipient || !isPlausibleEmail(recipient)) {
+            throw new TargetDeliveryError('Kein gültiger Empfänger für diese Aktion vorhanden.');
+        }
         try {
             const info = await this.transport().sendMail({
                 from: this.config.from,
-                // Fixed recipient. Deliberately not parameterised.
-                to: this.config.to,
+                to: recipient,
                 subject: payload.subject ?? 'Dokument aus dem Local Trust Gateway',
                 text: payload.body,
                 attachments: payload.attachments.map((attachment) => ({
@@ -97,4 +111,14 @@ export class MailTarget implements EgressTarget {
         this.transporter?.close();
         this.transporter = undefined;
     }
+}
+
+/**
+ * Last-resort shape check right before a dynamic recipient reaches SMTP. The
+ * orchestrator already validates the address before an action can be
+ * approved; this is a second, independent check so a bug or a tampered store
+ * cannot turn into a send to a malformed or empty destination.
+ */
+function isPlausibleEmail(value: string): boolean {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }

@@ -171,6 +171,18 @@ function renderApprovalCard(action) {
         ...(action.resource.modifiedAt ? field('Geändert', formatTime(action.resource.modifiedAt)) : [])
     ]);
 
+    // A dynamic-recipient target has no configured address of its own — the
+    // agent proposed this one. Called out separately and prominently, because
+    // it is the one field in this view that did not come from local config.
+    const dynamicRecipientNotice = action.target.dynamicRecipient
+        ? node('p', {
+              className: 'warning-strip is-danger',
+              text:
+                  `Empfänger vom Agenten vorgeschlagen, nicht lokal vorkonfiguriert: ${action.target.recipientDisplay}. ` +
+                  'Adresse genau prüfen (Tippfehler, ähnliche Domains) — erst danach freigeben.'
+          })
+        : null;
+
     // What actually leaves the machine, stated exactly.
     const egress = node('div', { className: 'egress-box' }, [
         node('div', { className: 'muted', text: 'Diese Daten verlassen das lokale System:' }),
@@ -207,6 +219,7 @@ function renderApprovalCard(action) {
                       'Bei der Freigabe werden sie erneut aus der Quelle gelesen und mit der angezeigten Prüfsumme verglichen.'
               })
             : null,
+        dynamicRecipientNotice,
         details,
         node('h3', { className: 'section-title', text: 'Ausgehende Daten' }),
         egress,
@@ -251,8 +264,11 @@ function renderApprovalCard(action) {
 
 async function decide(action, kind) {
     if (kind === 'approve') {
+        const recipientWarning = action.target.dynamicRecipient
+            ? `\n⚠ Empfänger wurde vom Agenten vorgeschlagen, nicht lokal vorkonfiguriert. Adresse genau prüfen!\n`
+            : '';
         const confirmed = window.confirm(
-            `Übertragung freigeben?\n\n` +
+            `Übertragung freigeben?\n${recipientWarning}\n` +
                 `Ressource: ${action.resource.title}\n` +
                 `Ziel: ${action.target.label} → ${action.target.recipientDisplay}\n` +
                 `Anhänge: ${action.egress.attachments.length} (${formatBytes(action.egress.totalBytes)})\n\n` +

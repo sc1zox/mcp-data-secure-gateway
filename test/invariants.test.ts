@@ -123,6 +123,71 @@ describe('Invariante 6: nur lokal konfigurierte Ziele', () => {
         assert.equal(target.delivered.length, 0);
         assert.equal(orchestrator.localPendingActions().length, 0);
     });
+
+    it('weist einen angegebenen Empfänger für ein fest konfiguriertes Ziel ab', async () => {
+        const { orchestrator, target } = await harness();
+        const found = await orchestrator.findResource({ query: QUERY, purpose: PURPOSE });
+        assert.ok(found.status === 'resolved');
+
+        const state = await orchestrator.prepareAction({
+            reference: found.resource.reference,
+            target: 'private_mail',
+            purpose: PURPOSE,
+            recipient: 'jemand@woanders.example'
+        });
+
+        assert.equal(state.status, 'failed');
+        assert.equal(target.delivered.length, 0);
+        assert.equal(orchestrator.localPendingActions().length, 0);
+    });
+
+    it('verlangt einen gültigen Empfänger für ein Ziel mit dynamischem Empfänger', async () => {
+        const { orchestrator, target } = await harness({ targetDescriptor: { dynamicRecipient: true } });
+        const found = await orchestrator.findResource({ query: QUERY, purpose: PURPOSE });
+        assert.ok(found.status === 'resolved');
+
+        const withoutRecipient = await orchestrator.prepareAction({
+            reference: found.resource.reference,
+            target: 'private_mail',
+            purpose: PURPOSE
+        });
+        assert.equal(withoutRecipient.status, 'failed');
+
+        const withMalformedRecipient = await orchestrator.prepareAction({
+            reference: found.resource.reference,
+            target: 'private_mail',
+            purpose: PURPOSE,
+            recipient: 'nicht-eine-adresse'
+        });
+        assert.equal(withMalformedRecipient.status, 'failed');
+        assert.equal(target.delivered.length, 0);
+        assert.equal(orchestrator.localPendingActions().length, 0);
+    });
+
+    it('zeigt den vom Agenten vorgeschlagenen Empfänger unverkürzt und liefert genau an ihn aus', async () => {
+        const { orchestrator, target } = await harness({ targetDescriptor: { dynamicRecipient: true } });
+        const found = await orchestrator.findResource({ query: QUERY, purpose: PURPOSE });
+        assert.ok(found.status === 'resolved');
+
+        const prepared = await orchestrator.prepareAction({
+            reference: found.resource.reference,
+            target: 'private_mail',
+            purpose: PURPOSE,
+            recipient: 'jobs@unternehmen.example'
+        });
+        assert.equal(prepared.status, 'awaiting_local_approval');
+
+        const view = orchestrator.localAction(prepared.action_id);
+        assert.ok(view);
+        assert.equal(view.target.dynamicRecipient, true);
+        assert.equal(view.target.recipientDisplay, 'jobs@unternehmen.example');
+
+        await orchestrator.approveAction(prepared.action_id, view.bindingHash);
+        await waitForAction(orchestrator, prepared.action_id, ['completed']);
+
+        assert.equal(target.delivered.length, 1);
+        assert.equal(target.delivered[0]?.recipient, 'jobs@unternehmen.example');
+    });
 });
 
 describe('Invariante 7: jede Übertragung braucht eine lokale Freigabe', () => {

@@ -54,6 +54,23 @@
       "maxAttachmentBytes": 20971520
     },
     {
+      "id": "job_application_mail",
+      "kind": "smtp",
+      "enabled": true,
+      "label": "Bewerbungsversand",
+      "purpose": "Versand einer Bewerbung an eine vom Nutzer je Aktion bestätigte Empfängeradresse.",
+      "smtp": {
+        "host": "smtp.example.org",
+        "port": 587,
+        "secure": false,
+        "user": "${SMTP_USER}",
+        "password": "${SMTP_PASSWORD}"
+      },
+      "from": "gateway@example.org",
+      "allowDynamicRecipient": true,
+      "maxAttachmentBytes": 20971520
+    },
+    {
       "id": "private_telegram",
       "kind": "telegram",
       "enabled": true,

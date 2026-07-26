@@ -92,6 +92,7 @@ export class FakeTarget implements EgressTarget {
             label: 'Private E-Mail',
             purpose: 'Versand an das eigene Postfach.',
             recipientDisplay: 'i**@example.org',
+            dynamicRecipient: false,
             supportsAttachments: true,
             maxAttachmentBytes: 1024 * 1024,
             ...this.descriptor
@@ -109,7 +110,8 @@ export class FakeTarget implements EgressTarget {
         this.delivered.push({
             subject: payload.subject,
             body: payload.body,
-            attachments: payload.attachments.map((attachment) => ({ ...attachment }))
+            attachments: payload.attachments.map((attachment) => ({ ...attachment })),
+            recipient: payload.recipient
         });
         return { reference: `msg-${this.delivered.length}` };
     }
@@ -227,6 +229,7 @@ export async function makeHarness(options: {
     resources?: InternalResource[];
     config?: Record<string, unknown>;
     egressOverrides?: Partial<EgressAssessment>;
+    targetDescriptor?: Partial<TargetDescriptor>;
 } = {}): Promise<Harness> {
     const dataDir = await mkdtemp(join(tmpdir(), 'ltg-test-'));
     const config = makeConfig({ ...(options.config ?? {}), dataDir });
@@ -241,7 +244,7 @@ export async function makeHarness(options: {
     await selections.load();
 
     const source = new FakeSource(options.resources ?? [makeResource()]);
-    const target = new FakeTarget();
+    const target = new FakeTarget('private_mail', options.targetDescriptor ?? {});
     const sources: SourceLookup = {
         get: (id) => (id === source.id ? source : undefined),
         all: () => [source],

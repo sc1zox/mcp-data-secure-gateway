@@ -31,6 +31,7 @@ export class TelegramTarget implements EgressTarget {
             label: this.config.label,
             purpose: this.config.purpose,
             recipientDisplay: maskChatId(this.config.chatId),
+            dynamicRecipient: false,
             supportsAttachments: true,
             maxAttachmentBytes: this.config.maxAttachmentBytes
         };

@@ -7,8 +7,12 @@ import { z } from 'zod';
  *
  * Two rules are enforced here rather than at call sites, because they are
  * security invariants and not preferences:
- *  - targets are a fixed list read from this file; nothing at runtime can add
- *    a recipient (invariant 6),
+ *  - targets are a fixed list read from this file; a target can only ever
+ *    reach the destinations this file allows for it — for most targets that
+ *    means one fixed recipient, and `allowDynamicRecipient` is the one
+ *    explicit, per-target opt-in that lets an action name a destination
+ *    within that target, always subject to local approval of the exact
+ *    address shown (invariant 6),
  *  - the local model has no remote alternative; there is no field for one
  *    (invariant 10).
  */
@@ -70,7 +74,16 @@ const localModelSchema = z.object({
 });
 
 const mailTargetSchema = z.object({
-    id: z.literal('private_mail'),
+    /**
+     * No longer a single fixed literal: `allowDynamicRecipient` lets more than
+     * one SMTP target exist side by side (e.g. `private_mail` fixed,
+     * `job_application_mail` dynamic), each with its own id.
+     */
+    id: z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[a-z][a-z0-9_]*$/, 'id muss klein geschrieben sein und darf nur a-z, 0-9 und _ enthalten.'),
     kind: z.literal('smtp'),
     enabled: z.boolean().default(true),
     label: z.string().default('Private E-Mail'),
@@ -83,8 +96,20 @@ const mailTargetSchema = z.object({
         password: z.string().min(1)
     }),
     from: z.string().email(),
-    /** The one and only recipient. Not overridable at runtime. */
-    to: z.string().email(),
+    /**
+     * The recipient, fixed at config time. Required unless
+     * `allowDynamicRecipient` is set — in that case there is no fixed address
+     * at all and the recipient comes from the approved action instead.
+     */
+    to: z.string().email().optional(),
+    /**
+     * Opt-in only: lets `prepare_action` name a recipient for this target
+     * specifically (e.g. varying job-application addresses). The address is
+     * never used without being shown, in full and unmasked, in the local
+     * approval view first — see invariant 6. Leave this false for anything
+     * that should stay a truly fixed destination.
+     */
+    allowDynamicRecipient: z.boolean().default(false),
     maxAttachmentBytes: z
         .number()
         .int()
@@ -219,6 +244,13 @@ export function parseConfig(raw: unknown): GatewayConfig {
     }
     if (config.targets.filter((target) => target.enabled).length === 0) {
         throw new ConfigError('Mindestens ein Ziel muss aktiviert sein.');
+    }
+    for (const target of config.targets) {
+        if (target.kind === 'smtp' && !target.allowDynamicRecipient && !target.to) {
+            throw new ConfigError(
+                `Ziel ${target.id}: 'to' ist erforderlich, solange allowDynamicRecipient nicht gesetzt ist.`
+            );
+        }
     }
     if (config.sources.filter((source) => source.enabled).length === 0) {
         throw new ConfigError('Mindestens eine Quelle muss aktiviert sein.');

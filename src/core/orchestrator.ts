@@ -52,6 +52,11 @@ export interface PrepareActionInput {
     purpose: string;
     /** Optional short note from Hermes, shown to the user before approval. */
     note?: string;
+    /**
+     * Concrete recipient address. Only accepted for a target whose descriptor
+     * sets `dynamicRecipient: true`; required there, refused everywhere else.
+     */
+    recipient?: string;
 }
 
 /** Everything the local approval view needs. Never sent to Hermes. */
@@ -63,7 +68,7 @@ export interface LocalActionView {
     createdAt: string;
     expiresAt: string;
     resource: LocalResourceSummary & { ref: string; safeLabel: string };
-    target: { id: string; label: string; recipientDisplay: string; purpose: string };
+    target: { id: string; label: string; recipientDisplay: string; purpose: string; dynamicRecipient: boolean };
     egress: {
         subject?: string;
         body: string;
@@ -276,16 +281,31 @@ export class Orchestrator {
         const purpose = clamp(input.purpose, MAX_PURPOSE_CHARS);
         const hermesNote = input.note ? clamp(input.note, MAX_HERMES_NOTE_CHARS) : undefined;
 
+        const recipientInput = input.recipient?.trim();
         await this.audit.record('hermes_request', {
             correlationId,
             resourceRef: input.reference,
             targetId: input.target,
-            detail: { tool: 'prepare_action', purpose, hasNote: Boolean(hermesNote) }
+            detail: {
+                tool: 'prepare_action',
+                purpose,
+                hasNote: Boolean(hermesNote),
+                recipientRequested: recipientInput ?? null
+            }
         });
 
         const target = this.targets.get(input.target);
         if (!target) {
             return this.rejectRequest(correlationId, 'target_unknown', { targetId: input.target });
+        }
+        const descriptor = target.describe();
+
+        if (descriptor.dynamicRecipient) {
+            if (!recipientInput || !isValidRecipientFormat(recipientInput)) {
+                return this.rejectRequest(correlationId, 'recipient_required', { targetId: input.target });
+            }
+        } else if (recipientInput) {
+            return this.rejectRequest(correlationId, 'recipient_not_allowed', { targetId: input.target });
         }
 
         const record = this.references.resolve(input.reference);
@@ -342,8 +362,6 @@ export class Orchestrator {
             return this.rejectRequest(correlationId, 'resource_changed', { resourceRef: record.ref });
         }
 
-        const descriptor = target.describe();
-
         // Fetch the original now so the approval view can state the exact size and
         // digest of what would leave. This is a local read, not a transfer.
         let file: SourceFile;
@@ -394,7 +412,11 @@ export class Orchestrator {
         const plan: ActionPlan = {
             kind: 'send_resource',
             targetId: descriptor.id,
-            recipientDisplay: descriptor.recipientDisplay,
+            // Dynamic case: show the exact address that will be used, unmasked,
+            // because approving it *is* approving that address.
+            recipientDisplay: descriptor.dynamicRecipient ? recipientInput! : descriptor.recipientDisplay,
+            dynamicRecipient: descriptor.dynamicRecipient,
+            recipientAddress: descriptor.dynamicRecipient ? recipientInput : undefined,
             subject: buildSubject(record.safeLabel),
             body: buildBody({
                 safeLabel: assessment.safeLabel ?? record.safeLabel,
@@ -695,7 +717,8 @@ export class Orchestrator {
             const receipt = await target.deliver({
                 subject: action.plan.subject,
                 body: action.plan.body,
-                attachments
+                attachments,
+                recipient: action.plan.recipientAddress
             });
             await this.actions.transition(action.actionId, 'completed', {
                 reason: 'delivered',
@@ -979,7 +1002,8 @@ export class Orchestrator {
                 id: action.plan.targetId,
                 label: descriptor?.label ?? action.plan.targetId,
                 recipientDisplay: action.plan.recipientDisplay,
-                purpose: descriptor?.purpose ?? '-'
+                purpose: descriptor?.purpose ?? '-',
+                dynamicRecipient: action.plan.dynamicRecipient
             },
             egress: {
                 subject: action.plan.subject,
@@ -1073,6 +1097,19 @@ function buildBody(input: { safeLabel: string; purpose: string; hermesNote?: str
         lines.push('', 'Hinweis des Agenten (nicht lokal verifiziert):', input.hermesNote);
     }
     return lines.join('\n');
+}
+
+/** RFC 5321's own upper bound on a mailbox address. */
+const MAX_RECIPIENT_CHARS = 320;
+
+/**
+ * Coarse shape check on a Hermes-supplied recipient, applied before an action
+ * can even be created. `MailTarget.deliver` repeats an equivalent check
+ * independently right before sending, so a bug or a tampered store here
+ * cannot turn into a send to a malformed address either.
+ */
+function isValidRecipientFormat(value: string): boolean {
+    return value.length <= MAX_RECIPIENT_CHARS && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 function clamp(value: string | undefined, limit: number): string {
