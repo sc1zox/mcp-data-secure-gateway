@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+
+# Local state: contains the mapping between opaque references and real
+# resources, plus the audit trail. Must never leave the machine.
+data/
+config/gateway.config.json
+.env
+
+# Local tooling state
+.claude/settings.local.json

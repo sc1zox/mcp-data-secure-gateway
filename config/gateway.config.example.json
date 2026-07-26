@@ -1,0 +1,86 @@
+{
+  "dataDir": "./data",
+  "logLevel": "info",
+
+  "sources": [
+    {
+      "id": "paperless",
+      "kind": "paperless-mcp",
+      "label": "Paperless",
+      "enabled": true,
+      "transport": {
+        "kind": "stdio",
+        "command": "npx",
+        "args": ["-y", "paperless-mcp"],
+        "env": {
+          "PAPERLESS_URL": "${PAPERLESS_URL}",
+          "PAPERLESS_API_TOKEN": "${PAPERLESS_API_TOKEN}"
+        }
+      },
+      "tools": {
+        "search": "search_documents",
+        "get": "get_document",
+        "download": "download_document"
+      },
+      "maxCandidates": 8,
+      "excerptChars": 2500
+    }
+  ],
+
+  "localModel": {
+    "baseUrl": "http://127.0.0.1:11434",
+    "model": "qwen3.5:9b",
+    "requestTimeoutMs": 120000,
+    "temperature": 0,
+    "numCtx": 16384
+  },
+
+  "targets": [
+    {
+      "id": "private_mail",
+      "kind": "smtp",
+      "enabled": true,
+      "label": "Private E-Mail",
+      "purpose": "Versand an das eigene private E-Mail-Postfach.",
+      "smtp": {
+        "host": "smtp.example.org",
+        "port": 587,
+        "secure": false,
+        "user": "${SMTP_USER}",
+        "password": "${SMTP_PASSWORD}"
+      },
+      "from": "gateway@example.org",
+      "to": "ich@example.org",
+      "maxAttachmentBytes": 20971520
+    },
+    {
+      "id": "private_telegram",
+      "kind": "telegram",
+      "enabled": true,
+      "label": "Privater Telegram-Chat",
+      "purpose": "Versand in den eigenen privaten Telegram-Chat.",
+      "botToken": "${TELEGRAM_BOT_TOKEN}",
+      "chatId": "${TELEGRAM_CHAT_ID}",
+      "maxAttachmentBytes": 52428800
+    }
+  ],
+
+  "approval": {
+    "host": "127.0.0.1",
+    "port": 8787,
+    "actionTtlSeconds": 1800,
+    "referenceTtlSeconds": 3600,
+    "selectionTtlSeconds": 1800
+  },
+
+  "hermesInterface": {
+    "transport": "stdio",
+    "http": {
+      "host": "127.0.0.1",
+      "port": 8788,
+      "path": "/mcp",
+      "bearerToken": "${HERMES_GATEWAY_TOKEN}",
+      "allowedHosts": ["127.0.0.1:8788", "localhost:8788"]
+    }
+  }
+}

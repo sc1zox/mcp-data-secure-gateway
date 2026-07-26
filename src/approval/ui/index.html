@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="de">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="referrer" content="no-referrer" />
+        <title>Local Trust Gateway – Freigabe</title>
+        <link rel="stylesheet" href="styles.css" />
+    </head>
+    <body>
+        <header class="topbar">
+            <div>
+                <h1>Local Trust Gateway</h1>
+                <p class="subtitle">Lokale Freigabe für Übertragungen privater Ressourcen</p>
+            </div>
+            <div class="topbar-status">
+                <span id="connection" class="badge badge-neutral">verbinde …</span>
+                <span id="clock" class="muted"></span>
+            </div>
+        </header>
+
+        <nav class="tabs" role="tablist">
+            <button class="tab is-active" data-tab="approvals" role="tab">
+                Freigaben <span class="count" id="count-approvals">0</span>
+            </button>
+            <button class="tab" data-tab="selections" role="tab">
+                Auswahl <span class="count" id="count-selections">0</span>
+            </button>
+            <button class="tab" data-tab="history" role="tab">Verlauf</button>
+            <button class="tab" data-tab="audit" role="tab">Protokoll</button>
+        </nav>
+
+        <main>
+            <section id="panel-approvals" class="panel is-active">
+                <div id="approvals"></div>
+                <p id="approvals-empty" class="empty">
+                    Keine Aktion wartet auf eine Freigabe. Anfragen von Hermes erscheinen hier,
+                    sobald das Gateway eine Aktion vorbereitet hat.
+                </p>
+            </section>
+
+            <section id="panel-selections" class="panel">
+                <div id="selections"></div>
+                <p id="selections-empty" class="empty">Keine offene Auswahl.</p>
+            </section>
+
+            <section id="panel-history" class="panel">
+                <div id="history"></div>
+                <p id="history-empty" class="empty">Noch keine Aktionen.</p>
+            </section>
+
+            <section id="panel-audit" class="panel">
+                <p class="muted">
+                    Lokales Entscheidungsprotokoll. Verbleibt auf diesem Rechner und wird nicht an
+                    Hermes übertragen.
+                </p>
+                <div id="audit"></div>
+            </section>
+        </main>
+
+        <div id="toast" class="toast" hidden></div>
+
+        <script src="app.js" type="module"></script>
+    </body>
+</html>
