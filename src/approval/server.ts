@@ -12,11 +12,16 @@ import { createLogger, describeError, type Logger } from '../util/log.js';
  * The local approval interface (invariant 7).
  *
  * This server is the user's side of the trust boundary and is deliberately not a
- * network service: it binds to loopback by default and every request carries a
- * token generated on this machine. Hermes has no route to it — it speaks MCP on a
- * different port with a different credential, and none of the endpoints below are
- * reachable through that interface (invariant: Hermes cannot grant or bypass a
- * local approval).
+ * network service: it binds to loopback by default. Hermes has no route to it —
+ * it speaks MCP on a different port with a different credential, and none of the
+ * endpoints below are reachable through that interface (invariant: Hermes cannot
+ * grant or bypass a local approval).
+ *
+ * The static shell (`/`, `/app.js`, `/styles.css`) is served without the token —
+ * it carries no data of its own, and its only job is to render a login form.
+ * Every `/api/*` request still carries the token generated on this machine,
+ * either as a header once logged in or, for a one-shot link, as a query
+ * parameter that the page immediately moves into its own session storage.
  *
  * Written against `node:http` on purpose. The component whose job is to hold the
  * mapping between opaque references and private documents should not pull in a
@@ -84,13 +89,10 @@ export class ApprovalServer {
         const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
         const path = url.pathname;
 
-        // The token may travel as a query parameter for the initial page load and
-        // as a header for API calls made by that page.
-        if (!this.isAuthorised(req, url)) {
-            sendJson(res, 401, { error: 'unauthorized', hint: 'Token fehlt oder ist ungültig.' });
-            return;
-        }
-
+        // The static shell carries no data of its own — its only job is to render
+        // the login form and, once submitted, ask the API for everything else.
+        // Gating it behind the token as well would make a login screen pointless:
+        // the page could never load far enough to show one.
         if (req.method === 'GET' && (path === '/' || path === '/index.html')) {
             await this.serveStatic(res, 'index.html', 'text/html; charset=utf-8');
             return;
@@ -101,6 +103,15 @@ export class ApprovalServer {
         }
         if (req.method === 'GET' && path === '/styles.css') {
             await this.serveStatic(res, 'styles.css', 'text/css; charset=utf-8');
+            return;
+        }
+
+        // Everything from here on is the API surface and requires the token —
+        // as a header from the page's own login flow, or still as a query
+        // parameter for a one-shot link (e.g. the URL the gateway prints on
+        // startup), which the client immediately moves into session storage.
+        if (!this.isAuthorised(req, url)) {
+            sendJson(res, 401, { error: 'unauthorized', hint: 'Token fehlt oder ist ungültig.' });
             return;
         }
 

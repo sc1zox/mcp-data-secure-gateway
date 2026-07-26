@@ -6,22 +6,63 @@
 // becoming part of this page. The same reasoning as invariant 11 on the server
 // side: resource content is data, not instructions.
 
-const TOKEN = (() => {
+// The token lives only for the tab's lifetime (sessionStorage), never in the
+// URL after the first load: a token in the address bar ends up in browser
+// history, autocomplete and screenshots, which the login form avoids.
+const TOKEN_STORAGE_KEY = 'ltg-ui-token';
+
+function readStoredToken() {
+    try {
+        return sessionStorage.getItem(TOKEN_STORAGE_KEY) ?? '';
+    } catch {
+        return '';
+    }
+}
+
+function storeToken(value) {
+    try {
+        sessionStorage.setItem(TOKEN_STORAGE_KEY, value);
+    } catch {
+        // Storage may be unavailable (e.g. strict private browsing); the
+        // token still works for the rest of this page load via `TOKEN`.
+    }
+}
+
+function clearStoredToken() {
+    try {
+        sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    } catch {
+        // Nothing to clear if it was never stored.
+    }
+}
+
+// A URL carrying `?token=` still works once, as a convenience for the link
+// the gateway prints on startup, but it is immediately moved out of the URL
+// and into session storage rather than kept around as a bookmarkable secret.
+let TOKEN = (() => {
     const fromQuery = new URLSearchParams(window.location.search).get('token');
     if (fromQuery) {
-        // Keep it out of the address bar, the history entry and any screenshot.
         window.history.replaceState({}, '', window.location.pathname);
+        storeToken(fromQuery);
         return fromQuery;
     }
-    return '';
+    return readStoredToken();
 })();
 
 const POLL_INTERVAL_MS = 2000;
 const state = { actions: [], selections: [], history: [], busy: new Set() };
+let pollHandle = null;
 
 const el = {
     connection: document.getElementById('connection'),
     clock: document.getElementById('clock'),
+    logout: document.getElementById('logout'),
+    loginScreen: document.getElementById('login-screen'),
+    loginForm: document.getElementById('login-form'),
+    loginInput: document.getElementById('login-token'),
+    loginSubmit: document.getElementById('login-submit'),
+    loginError: document.getElementById('login-error'),
+    appShell: document.getElementById('app-shell'),
     approvals: document.getElementById('approvals'),
     approvalsEmpty: document.getElementById('approvals-empty'),
     selections: document.getElementById('selections'),
@@ -118,7 +159,9 @@ async function api(path, options = {}) {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-        throw new Error(payload.error ?? `HTTP ${response.status}`);
+        const error = new Error(payload.error ?? `HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
     }
     return payload;
 }
@@ -473,12 +516,12 @@ async function refresh() {
         el.clock.textContent = formatTime(payload.serverTime);
         render();
     } catch (error) {
-        el.connection.className = 'badge badge-danger';
-        el.connection.textContent = 'keine Verbindung';
-        if (!TOKEN) {
-            toast('Kein Zugriffstoken. Die Oberfläche muss über die vom Gateway ausgegebene URL geöffnet werden.', 'error');
+        if (error.status === 401) {
+            logout('Sitzung abgelaufen oder Token ungültig. Bitte erneut anmelden.');
             return;
         }
+        el.connection.className = 'badge badge-danger';
+        el.connection.textContent = 'keine Verbindung';
         toast(`Statusabfrage fehlgeschlagen: ${error.message}`, 'error');
     }
 }
@@ -488,6 +531,10 @@ async function refreshAudit() {
         const payload = await api('/api/audit?limit=200');
         el.audit.replaceChildren(renderAudit(payload.events ?? []));
     } catch (error) {
+        if (error.status === 401) {
+            logout('Sitzung abgelaufen oder Token ungültig. Bitte erneut anmelden.');
+            return;
+        }
         toast(`Protokoll nicht lesbar: ${error.message}`, 'error');
     }
 }
@@ -510,5 +557,94 @@ for (const tab of document.querySelectorAll('.tab')) {
     tab.addEventListener('click', () => activateTab(tab.dataset.tab));
 }
 
-void refresh();
-setInterval(refresh, POLL_INTERVAL_MS);
+// --------------------------------------------------------------------- login
+
+function startPolling() {
+    if (pollHandle) {
+        return;
+    }
+    pollHandle = setInterval(refresh, POLL_INTERVAL_MS);
+}
+
+function stopPolling() {
+    clearInterval(pollHandle);
+    pollHandle = null;
+}
+
+function showApp() {
+    el.loginScreen.hidden = true;
+    el.appShell.hidden = false;
+    el.logout.hidden = false;
+}
+
+function showLogin(message) {
+    stopPolling();
+    el.appShell.hidden = true;
+    el.logout.hidden = true;
+    el.loginScreen.hidden = false;
+    if (message) {
+        el.loginError.textContent = message;
+        el.loginError.hidden = false;
+    }
+    el.loginInput.value = '';
+    el.loginInput.focus();
+}
+
+/** Ends the local session: neither the token nor its origin (URL vs. typed) is kept afterwards. */
+function logout(message) {
+    TOKEN = '';
+    clearStoredToken();
+    showLogin(message);
+}
+
+el.loginForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const value = el.loginInput.value.trim();
+    if (!value) {
+        return;
+    }
+    TOKEN = value;
+    el.loginError.hidden = true;
+    el.loginSubmit.disabled = true;
+    try {
+        // A live call, not just a format check: the only proof a token is
+        // valid is the gateway accepting it.
+        await api('/api/state');
+        storeToken(TOKEN);
+        showApp();
+        await refresh();
+        startPolling();
+    } catch (error) {
+        TOKEN = '';
+        el.loginError.textContent = error.status === 401 ? 'Token ungültig.' : `Anmeldung fehlgeschlagen: ${error.message}`;
+        el.loginError.hidden = false;
+        el.loginInput.value = '';
+        el.loginInput.focus();
+    } finally {
+        el.loginSubmit.disabled = false;
+    }
+});
+
+el.logout.addEventListener('click', () => logout());
+
+async function boot() {
+    if (!TOKEN) {
+        showLogin();
+        return;
+    }
+    try {
+        await api('/api/state');
+    } catch (error) {
+        // The token from the URL or a previous session no longer works;
+        // fall through to a clean login rather than polling against a 401.
+        TOKEN = '';
+        clearStoredToken();
+        showLogin(error.status === 401 ? undefined : `Verbindung fehlgeschlagen: ${error.message}`);
+        return;
+    }
+    showApp();
+    await refresh();
+    startPolling();
+}
+
+void boot();

@@ -40,47 +40,72 @@
             <div class="topbar-status">
                 <span id="connection" class="badge badge-neutral">verbinde …</span>
                 <span id="clock" class="muted"></span>
+                <button id="logout" class="btn" type="button" hidden>Abmelden</button>
             </div>
         </header>
 
-        <nav class="tabs" role="tablist">
-            <button class="tab is-active" data-tab="approvals" role="tab">
-                Freigaben <span class="count" id="count-approvals">0</span>
-            </button>
-            <button class="tab" data-tab="selections" role="tab">
-                Auswahl <span class="count" id="count-selections">0</span>
-            </button>
-            <button class="tab" data-tab="history" role="tab">Verlauf</button>
-            <button class="tab" data-tab="audit" role="tab">Protokoll</button>
-        </nav>
-
-        <main>
-            <section id="panel-approvals" class="panel is-active">
-                <div id="approvals"></div>
-                <p id="approvals-empty" class="empty">
-                    Keine Aktion wartet auf eine Freigabe. Anfragen von Hermes erscheinen hier,
-                    sobald das Gateway eine Aktion vorbereitet hat.
-                </p>
-            </section>
-
-            <section id="panel-selections" class="panel">
-                <div id="selections"></div>
-                <p id="selections-empty" class="empty">Keine offene Auswahl.</p>
-            </section>
-
-            <section id="panel-history" class="panel">
-                <div id="history"></div>
-                <p id="history-empty" class="empty">Noch keine Aktionen.</p>
-            </section>
-
-            <section id="panel-audit" class="panel">
+        <section id="login-screen" class="login-screen">
+            <form id="login-form" class="login-card">
+                <h2>Anmelden</h2>
                 <p class="muted">
-                    Lokales Entscheidungsprotokoll. Verbleibt auf diesem Rechner und wird nicht an
-                    Hermes übertragen.
+                    Token aus der Startausgabe des Gateways oder aus <code>data/ui-token</code>
+                    eingeben.
                 </p>
-                <div id="audit"></div>
-            </section>
-        </main>
+                <label for="login-token">Zugriffstoken</label>
+                <input
+                    id="login-token"
+                    name="token"
+                    type="password"
+                    autocomplete="off"
+                    autocapitalize="off"
+                    spellcheck="false"
+                    required
+                />
+                <p id="login-error" class="login-error" hidden></p>
+                <button id="login-submit" class="btn btn-primary" type="submit">Anmelden</button>
+            </form>
+        </section>
+
+        <div id="app-shell" hidden>
+            <nav class="tabs" role="tablist">
+                <button class="tab is-active" data-tab="approvals" role="tab">
+                    Freigaben <span class="count" id="count-approvals">0</span>
+                </button>
+                <button class="tab" data-tab="selections" role="tab">
+                    Auswahl <span class="count" id="count-selections">0</span>
+                </button>
+                <button class="tab" data-tab="history" role="tab">Verlauf</button>
+                <button class="tab" data-tab="audit" role="tab">Protokoll</button>
+            </nav>
+
+            <main>
+                <section id="panel-approvals" class="panel is-active">
+                    <div id="approvals"></div>
+                    <p id="approvals-empty" class="empty">
+                        Keine Aktion wartet auf eine Freigabe. Anfragen von Hermes erscheinen hier,
+                        sobald das Gateway eine Aktion vorbereitet hat.
+                    </p>
+                </section>
+
+                <section id="panel-selections" class="panel">
+                    <div id="selections"></div>
+                    <p id="selections-empty" class="empty">Keine offene Auswahl.</p>
+                </section>
+
+                <section id="panel-history" class="panel">
+                    <div id="history"></div>
+                    <p id="history-empty" class="empty">Noch keine Aktionen.</p>
+                </section>
+
+                <section id="panel-audit" class="panel">
+                    <p class="muted">
+                        Lokales Entscheidungsprotokoll. Verbleibt auf diesem Rechner und wird nicht an
+                        Hermes übertragen.
+                    </p>
+                    <div id="audit"></div>
+                </section>
+            </main>
+        </div>
 
         <div id="toast" class="toast" hidden></div>
 

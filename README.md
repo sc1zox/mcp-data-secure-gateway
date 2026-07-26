@@ -77,8 +77,14 @@ Freigabeoberfläche: http://127.0.0.1:8787/?token=xpq2SqnmOouQyxmMrA7Wz_pM7E3NXN
 ```
 
 Das Token wird beim ersten Start erzeugt und in `data/ui-token` abgelegt (Modus 0600), damit die
-Konfigurationsdatei kein Geheimnis tragen muss. Wer die URL nicht hat, erhält 401 — die Oberfläche
-ist bewusst kein offener lokaler Dienst.
+Konfigurationsdatei kein Geheimnis tragen muss.
+
+Die Seite selbst lädt ohne Token — sie zeigt dann nur ein Anmeldeformular, denn sie enthält keine
+eigenen Daten. Jeder API-Aufruf dahinter verlangt weiterhin das Token: entweder einmalig über die
+obige URL (wird dabei sofort aus der Adresszeile entfernt und in die Sitzung des Browser-Tabs
+verschoben) oder durch manuelles Einfügen ins Anmeldeformular, z. B. aus `data/ui-token`. „Abmelden“
+verwirft die Sitzung wieder. Ohne gültiges Token bleiben alle `/api/*`-Aufrufe bei 401 — die
+Oberfläche ist bewusst kein offener lokaler Dienst.
 
 ### Anbindung der Quelle
 
