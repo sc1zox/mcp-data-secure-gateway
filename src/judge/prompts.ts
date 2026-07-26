@@ -62,6 +62,12 @@ ${INJECTION_RULES(nonce)}
 Entscheidungsmaßstäbe:
 - Passt der Kandidat inhaltlich zur Suchabsicht?
 - Passt er zum angegebenen Zweck?
+- Nutze dafür aktiv die Attribute/Tags und den Inhaltsauszug jedes Kandidaten, nicht nur
+  den Titel. Ein Wortbestandteil im Titel ist keine inhaltliche Prüfung und ersetzt sie
+  nicht - beurteile anhand der tatsächlichen Angaben, nicht anhand dessen, wonach der
+  Titel klingt.
+- Wirkt der Inhaltsauszug wie kodierte Rohdaten statt Klartext (z. B. Base64), versuche
+  ihn im Zweifel zu dekodieren und inhaltlich auszuwerten, statt ihn zu ignorieren.
 - Ist er aktuell? Bei mehreren Versionen desselben Dokuments zählt die neueste, sofern
   der Zweck nichts anderes verlangt.
 - Sind zwei Kandidaten fachlich gleich plausibel? Dann ist das Ergebnis nicht eindeutig.
