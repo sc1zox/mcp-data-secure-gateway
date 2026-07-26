@@ -74,13 +74,13 @@
   },
 
   "hermesInterface": {
-    "transport": "stdio",
+    "transport": "http",
     "http": {
-      "host": "127.0.0.1",
+      "host": "0.0.0.0",
       "port": 8788,
       "path": "/mcp",
       "bearerToken": "${HERMES_GATEWAY_TOKEN}",
-      "allowedHosts": ["127.0.0.1:8788", "localhost:8788"]
+      "allowedHosts": ["llm-gateway.sc1zox.dev"]
     }
   }
 }
