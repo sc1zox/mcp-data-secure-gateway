@@ -505,16 +505,20 @@ function render() {
     }
 }
 
+/** Applies a freshly fetched `/api/state` payload to the visible dashboard. */
+function applyState(payload) {
+    state.actions = payload.actions ?? [];
+    state.selections = payload.selections ?? [];
+    state.history = payload.history ?? [];
+    el.connection.className = 'badge badge-ok';
+    el.connection.textContent = 'verbunden';
+    el.clock.textContent = formatTime(payload.serverTime);
+    render();
+}
+
 async function refresh() {
     try {
-        const payload = await api('/api/state');
-        state.actions = payload.actions ?? [];
-        state.selections = payload.selections ?? [];
-        state.history = payload.history ?? [];
-        el.connection.className = 'badge badge-ok';
-        el.connection.textContent = 'verbunden';
-        el.clock.textContent = formatTime(payload.serverTime);
-        render();
+        applyState(await api('/api/state'));
     } catch (error) {
         if (error.status === 401) {
             logout('Sitzung abgelaufen oder Token ungültig. Bitte erneut anmelden.');
@@ -597,23 +601,32 @@ function logout(message) {
     showLogin(message);
 }
 
+/**
+ * The one place that turns a candidate token into an entered session: tries
+ * it against a live endpoint (the only real proof a token is valid), and on
+ * success applies that same response instead of fetching it again a second
+ * time. Used identically by the login form and by boot-time auto-login, so
+ * neither path pays for two round trips where one settles it.
+ */
+async function authenticateAndEnter(candidateToken) {
+    TOKEN = candidateToken;
+    const payload = await api('/api/state');
+    storeToken(TOKEN);
+    showApp();
+    applyState(payload);
+    startPolling();
+}
+
 el.loginForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const value = el.loginInput.value.trim();
     if (!value) {
         return;
     }
-    TOKEN = value;
     el.loginError.hidden = true;
     el.loginSubmit.disabled = true;
     try {
-        // A live call, not just a format check: the only proof a token is
-        // valid is the gateway accepting it.
-        await api('/api/state');
-        storeToken(TOKEN);
-        showApp();
-        await refresh();
-        startPolling();
+        await authenticateAndEnter(value);
     } catch (error) {
         TOKEN = '';
         el.loginError.textContent = error.status === 401 ? 'Token ungültig.' : `Anmeldung fehlgeschlagen: ${error.message}`;
@@ -633,18 +646,14 @@ async function boot() {
         return;
     }
     try {
-        await api('/api/state');
+        await authenticateAndEnter(TOKEN);
     } catch (error) {
         // The token from the URL or a previous session no longer works;
         // fall through to a clean login rather than polling against a 401.
         TOKEN = '';
         clearStoredToken();
         showLogin(error.status === 401 ? undefined : `Verbindung fehlgeschlagen: ${error.message}`);
-        return;
     }
-    showApp();
-    await refresh();
-    startPolling();
 }
 
 void boot();
