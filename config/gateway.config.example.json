@@ -58,8 +58,8 @@
       "id": "job_application_mail",
       "kind": "smtp",
       "enabled": true,
-      "label": "Bewerbungsversand",
-      "purpose": "Versand einer Bewerbung an eine vom Nutzer je Aktion bestätigte Empfängeradresse.",
+      "label": "E-Mail (Empfänger je Aktion)",
+      "purpose": "Versand an eine vom Nutzer je Aktion bestätigte Empfängeradresse.",
       "smtp": {
         "host": "smtp.example.org",
         "port": 587,
