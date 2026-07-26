@@ -1,0 +1,97 @@
+{
+    "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
+    "version": 1,
+    "cli": {
+        "packageManager": "npm",
+        "analytics": false
+    },
+    "newProjectRoot": "projects",
+    "projects": {
+        "local-trust-gateway-ui": {
+            "projectType": "application",
+            "schematics": {
+                "@schematics/angular:component": {
+                    "style": "scss",
+                    "skipTests": true,
+                    "changeDetection": "OnPush"
+                },
+                "@schematics/angular:class": { "skipTests": true },
+                "@schematics/angular:directive": { "skipTests": true },
+                "@schematics/angular:guard": { "skipTests": true },
+                "@schematics/angular:interceptor": { "skipTests": true },
+                "@schematics/angular:pipe": { "skipTests": true },
+                "@schematics/angular:resolver": { "skipTests": true },
+                "@schematics/angular:service": { "skipTests": true }
+            },
+            "root": "",
+            "sourceRoot": "src",
+            "prefix": "ltg",
+            "architect": {
+                "build": {
+                    "builder": "@angular/build:application",
+                    "options": {
+                        "browser": "src/main.ts",
+                        "index": "src/index.html",
+                        "tsConfig": "tsconfig.app.json",
+                        "inlineStyleLanguage": "scss",
+                        "assets": [],
+                        "styles": ["src/styles.scss"],
+                        "outputPath": {
+                            "base": "../dist/approval/ui",
+                            "browser": ""
+                        }
+                    },
+                    "configurations": {
+                        "production": {
+                            "budgets": [
+                                {
+                                    "type": "initial",
+                                    "maximumWarning": "700kB",
+                                    "maximumError": "1.5MB"
+                                },
+                                {
+                                    "type": "anyComponentStyle",
+                                    "maximumWarning": "8kB",
+                                    "maximumError": "16kB"
+                                }
+                            ],
+                            "outputHashing": "none",
+                            "sourceMap": false,
+                            "namedChunks": false,
+                            "optimization": {
+                                "scripts": true,
+                                "fonts": false,
+                                "styles": {
+                                    "minify": true,
+                                    "inlineCritical": false
+                                }
+                            }
+                        },
+                        "development": {
+                            "optimization": false,
+                            "extractLicenses": false,
+                            "sourceMap": true,
+                            "outputHashing": "none"
+                        }
+                    },
+                    "defaultConfiguration": "production"
+                },
+                "serve": {
+                    "builder": "@angular/build:dev-server",
+                    "options": {
+                        "proxyConfig": "proxy.conf.json"
+                    },
+                    "configurations": {
+                        "production": {
+                            "buildTarget": "local-trust-gateway-ui:build:production"
+                        },
+                        "development": {
+                            "buildTarget": "local-trust-gateway-ui:build:development"
+                        }
+                    },
+                    "defaultConfiguration": "development"
+                }
+            }
+        }
+    }
+}

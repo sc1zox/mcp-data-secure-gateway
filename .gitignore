@@ -8,5 +8,9 @@ data/
 config/gateway.config.json
 .env
 
+# Angular build caches. The UI keeps its own dependency tree under ui/, so that
+# node_modules is covered by the pattern above rather than by a second rule.
+ui/.angular/
+
 # Local tooling state
 .claude/settings.local.json

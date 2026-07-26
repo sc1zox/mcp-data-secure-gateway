@@ -11,10 +11,13 @@
     "local-trust-gateway": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-ui.mjs",
+    "build": "npm run build:ui && tsc -p tsconfig.json",
+    "build:ui": "npm --prefix ui run build",
+    "setup": "npm install && npm --prefix ui install",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev:ui": "npm --prefix ui start",
+    "typecheck": "tsc -p tsconfig.json --noEmit && npm --prefix ui run typecheck",
     "test": "node --import tsx --test \"test/**/*.test.ts\""
   },
   "dependencies": {

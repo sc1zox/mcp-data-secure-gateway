@@ -1,0 +1,8 @@
+{
+    "//": "Only for `ng serve`. The dev server owns the shell and forwards the API to a locally running gateway (config/gateway.config.json -> approval.port). In a real build both come from the gateway itself and this file is unused.",
+    "/api": {
+        "target": "http://127.0.0.1:8787",
+        "secure": false,
+        "changeOrigin": false
+    }
+}

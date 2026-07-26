@@ -1,0 +1,145 @@
+@use '@angular/material' as mat;
+
+/*
+ * Global theme and design tokens for the local approval interface.
+ *
+ * Two constraints shape this file and are not negotiable per component:
+ *
+ *  - No network. The page is served under `default-src 'none'` with `font-src
+ *    'none'`, so there are no web fonts and no icon fonts; typography is a system
+ *    stack and every icon is inline SVG.
+ *  - The screen has to keep two very different kinds of statement apart. What
+ *    will leave the machine is fact, and is styled as the loudest thing on the
+ *    page. What the local model thinks about it is opinion, and is styled as
+ *    quieter, secondary material. The colour system below exists mostly to hold
+ *    that line.
+ */
+
+html {
+    @include mat.theme(
+        (
+            color: (
+                primary: mat.$azure-palette,
+                tertiary: mat.$blue-palette
+            ),
+            typography: (
+                plain-family: (
+                    system-ui,
+                    -apple-system,
+                    'Segoe UI',
+                    Roboto,
+                    sans-serif
+                ),
+                brand-family: (
+                    system-ui,
+                    -apple-system,
+                    'Segoe UI',
+                    Roboto,
+                    sans-serif
+                )
+            ),
+            density: 0
+        )
+    );
+
+    color-scheme: dark light;
+}
+
+:root {
+    /*
+     * Material's M3 palette has one semantic colour, `error`. An approval screen
+     * needs three, and they mean different things: `caution` marks what is merely
+     * unusual, `alarm` marks what the user must read character by character
+     * before approving, `settled` marks what is already decided. Defined with
+     * `light-dark()` so they follow the same scheme switch as the Material tokens
+     * instead of needing a parallel media query.
+     */
+    --ltg-alarm: light-dark(#b3261e, #f2685c);
+    --ltg-alarm-surface: light-dark(#fdecea, #2a100d);
+    --ltg-caution: light-dark(#8a5a00, #f0b429);
+    --ltg-caution-surface: light-dark(#fdf3e0, #241a05);
+    --ltg-settled: light-dark(#17864f, #3ecf8e);
+    --ltg-settled-surface: light-dark(#e7f6ee, #062016);
+
+    --ltg-mono: ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, Consolas, monospace;
+
+    --ltg-radius-sm: 8px;
+    --ltg-radius: 12px;
+    --ltg-radius-lg: 16px;
+
+    --ltg-gap-xs: 0.35rem;
+    --ltg-gap-sm: 0.6rem;
+    --ltg-gap: 1rem;
+    --ltg-gap-lg: 1.5rem;
+
+    /* Width of the master column in the approvals view. */
+    --ltg-list-width: 21rem;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    height: 100%;
+}
+
+body {
+    margin: 0;
+    background: var(--mat-sys-surface);
+    color: var(--mat-sys-on-surface);
+    font: var(--mat-sys-body-medium);
+    -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+    outline: 2px solid var(--mat-sys-primary);
+    outline-offset: 2px;
+}
+
+::selection {
+    background: color-mix(in srgb, var(--mat-sys-primary) 30%, transparent);
+}
+
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--mat-sys-outline-variant);
+    border-radius: 999px;
+    border: 2px solid var(--mat-sys-surface);
+}
+
+/*
+ * Hashes, references and ids are meant to be compared character by character,
+ * which is the one job a proportional font is bad at.
+ */
+.ltg-mono {
+    font-family: var(--ltg-mono);
+    font-size: 0.8rem;
+    overflow-wrap: anywhere;
+}
+
+.ltg-muted {
+    color: var(--mat-sys-on-surface-variant);
+}
+
+/* The snackbar variants used by the notifier. */
+.ltg-snack-error {
+    --mat-snack-bar-button-color: var(--mat-sys-on-error-container);
+    --mdc-snackbar-container-color: var(--mat-sys-error-container);
+    --mdc-snackbar-supporting-text-color: var(--mat-sys-on-error-container);
+}
+
+.ltg-snack-ok {
+    --mdc-snackbar-container-color: var(--ltg-settled-surface);
+    --mdc-snackbar-supporting-text-color: var(--ltg-settled);
+    --mat-snack-bar-button-color: var(--ltg-settled);
+}

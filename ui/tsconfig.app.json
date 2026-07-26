@@ -1,0 +1,19 @@
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "types": [],
+        /*
+         * The approval server and this app are two separate TypeScript projects
+         * that have to agree byte for byte on what `/api/state` returns. They do
+         * that by compiling the same file: `contract.ts` is import-free precisely
+         * so it can be pulled into a DOM-typed project without dragging Node's
+         * module graph along. A field renamed on the server now fails this build
+         * instead of quietly rendering as empty in an approval dialog.
+         */
+        "paths": {
+            "@gateway/contract": ["../src/approval/contract"]
+        }
+    },
+    "include": ["src/**/*.ts", "../src/approval/contract.ts"],
+    "exclude": ["src/**/*.spec.ts"]
+}

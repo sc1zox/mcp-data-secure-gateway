@@ -46,13 +46,22 @@ Diese Systeme müssen vorhanden sein und werden von diesem Projekt **nicht** ein
 | SMTP-Zugang | Ziel `private_mail` |
 | Telegram-Bot + Chat-ID | Ziel `private_telegram` |
 
-Node.js ≥ 20.11.
+Node.js ≥ 20.11 für das Gateway selbst. Der **Build der Freigabeoberfläche** braucht zusätzlich
+Node ≥ 22.22.3 (oder ≥ 24.15.0), weil Angular 22 das verlangt. Das betrifft nur `npm run build`,
+nicht den Betrieb: `npm start` läuft weiterhin unter 20.11.
 
 ## Einrichtung
 
+Die Oberfläche liegt als eigenes npm-Projekt unter `ui/` mit eigenem `node_modules`. Das ist
+Absicht und kein Workspace: das Gateway kompiliert mit TypeScript 5.9, Angular 22 bringt 6.0 mit,
+und getrennte Abhängigkeitsbäume verhindern, dass npm eine der beiden Versionen nach oben hoistet
+und der Gateway-Build eine andere erwischt als vorgesehen.
+
 ```bash
-npm install
+npm run setup
 ```
+
+Das installiert beide Bäume. Einzeln wäre es `npm install` plus `npm --prefix ui install`.
 
 ```bash
 cp config/gateway.config.example.json config/gateway.config.json
@@ -65,6 +74,10 @@ still einen leeren Wert einzusetzen. `.env.example` listet die erwarteten Variab
 ```bash
 npm run build
 ```
+
+Das baut erst die Oberfläche nach `dist/approval/ui` und übersetzt dann das Gateway. Für die
+Arbeit an der Oberfläche gibt es `npm run dev:ui` — der Angular-Dev-Server liefert die Seite mit
+Hot Reload und leitet `/api` an ein laufendes Gateway auf Port 8787 weiter (`ui/proxy.conf.json`).
 
 ```bash
 npm start
@@ -85,6 +98,28 @@ obige URL (wird dabei sofort aus der Adresszeile entfernt und in die Sitzung des
 verschoben) oder durch manuelles Einfügen ins Anmeldeformular, z. B. aus `data/ui-token`. „Abmelden“
 verwirft die Sitzung wieder. Ohne gültiges Token bleiben alle `/api/*`-Aufrufe bei 401 — die
 Oberfläche ist bewusst kein offener lokaler Dienst.
+
+### Aufbau der Oberfläche
+
+Angular 22 mit Angular Material, gebaut nach `dist/approval/ui` und von `approval/server.ts`
+ausgeliefert. Drei Entscheidungen prägen sie:
+
+- **Ein geteilter Contract.** `src/approval/contract.ts` beschreibt das Wire-Format und ist
+  importfrei, damit beide TypeScript-Projekte dieselbe Datei kompilieren können. Der Server pinnt
+  seine Antworten per `satisfies` dagegen, die Oberfläche liest dieselben Deklarationen. Ein
+  umbenanntes Feld bricht dadurch den Build, statt im Freigabedialog still leer zu bleiben.
+- **Ein Ort für den Sitzungszustand.** Token, Guard und Routing hängen an einem einzigen Signal.
+  Die frühere Oberfläche hielt denselben Zustand in vier Formen gleichzeitig, die auseinanderlaufen
+  konnten — so erschien das Anmeldeformular über einem bereits angemeldeten Dashboard.
+- **Fakten vor Einschätzung.** Die Detailansicht führt erst auf, was den Rechner verlässt, dann
+  woher es stammt, und zuletzt was das lokale Modell davon hält. Ein vom Agenten vorgeschlagener
+  Empfänger steht dabei groß und in Monospace, und die Freigabe verlangt für solche Ziele eine
+  ausdrückliche Bestätigung, dass die Adresse geprüft wurde.
+
+Die Seite kommt ohne Netzzugriff aus: Systemschriften statt Webfonts, Icons als Inline-SVG. Sie
+läuft unter `default-src 'none'`. Angular fügt Komponentenstyles zur Laufzeit als `style`-Element
+ein, was `style-src 'self'` zu Recht verbietet — statt auf `'unsafe-inline'` auszuweichen, setzt
+der Server pro Auslieferung eine frische Nonce in `index.html` und in den CSP-Header.
 
 Die Reiter sind echte URLs (`/login`, `/app/freigaben` als `/app/approvals` usw.), navigiert über
 die History-API im Client — kein Framework, kein Bundler, passend zur CSP (`script-src 'self'`).
@@ -242,7 +277,7 @@ nicht Interna. `test/helpers.ts` stellt Quelle, Ziel und lokales Modell als Doub
 
 - `npm audit` meldet eine mittlere Schwachstelle in `@hono/node-server`, einer transitiven
   Abhängigkeit von `@modelcontextprotocol/sdk`. Betroffen ist `serve-static`, das dieses Projekt
-  nicht verwendet — die Freigabeoberfläche läuft auf `node:http`, und der MCP-Endpunkt geht nicht
+  nicht verwendet — der Approval-Server läuft auf `node:http`, und der MCP-Endpunkt geht nicht
   über den betroffenen Pfad. Ein Fix erfordert einen Downgrade des SDK und wurde nicht gemacht.
 - Die Originaldaten einer vorbereiteten Aktion liegen bis zur Entscheidung im Speicher, damit die
   Freigabeansicht Größe und Prüfsumme des tatsächlichen Anhangs nennen kann. Nach einem Neustart

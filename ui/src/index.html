@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="de">
+    <head>
+        <meta charset="utf-8" />
+        <title>Local Trust Gateway – Freigabe</title>
+        <base href="/" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="referrer" content="no-referrer" />
+        <meta name="color-scheme" content="dark light" />
+    </head>
+    <body>
+        <!--
+            `ngCspNonce` is how Angular learns which nonce to stamp on the style
+            elements it inserts for component styles. The approval server replaces
+            this placeholder with a fresh random value every time it delivers this
+            file, and puts the same value in the Content-Security-Policy header.
+            That keeps `style-src` strict instead of falling back to
+            'unsafe-inline' — which, on a page that renders document titles the
+            gateway did not author, would be a real hole rather than a formality.
+        -->
+        <ltg-root ngCspNonce="__CSP_NONCE__"></ltg-root>
+    </body>
+</html>

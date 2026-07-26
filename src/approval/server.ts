@@ -1,12 +1,23 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, normalize } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import type { GatewayConfig } from '../config.js';
 import { ApprovalConflictError, UnknownActionError, type Orchestrator } from '../core/orchestrator.js';
+import type { ActionRecord } from '../core/types.js';
 import type { AuditLog } from '../store/auditLog.js';
 import { safeEqual } from '../util/hash.js';
 import { createLogger, describeError, type Logger } from '../util/log.js';
+import {
+    API_TAB_ROUTES,
+    type ApiAuditResponse,
+    type ApiHistoryEntry,
+    type ApiOkResponse,
+    type ApiReselectResponse,
+    type ApiSelectResponse,
+    type ApiStateResponse
+} from './contract.js';
 
 /**
  * The local approval interface (invariant 7).
@@ -17,15 +28,22 @@ import { createLogger, describeError, type Logger } from '../util/log.js';
  * endpoints below are reachable through that interface (invariant: Hermes cannot
  * grant or bypass a local approval).
  *
- * The static shell (`/`, `/app.js`, `/styles.css`) is served without the token —
- * it carries no data of its own, and its only job is to render a login form.
- * Every `/api/*` request still carries the token generated on this machine,
+ * The static shell (the HTML plus the built JS/CSS bundles) is served without the
+ * token — it carries no data of its own, and its only job is to render a login
+ * form. Every `/api/*` request still carries the token generated on this machine,
  * either as a header once logged in or, for a one-shot link, as a query
  * parameter that the page immediately moves into its own session storage.
  *
- * Written against `node:http` on purpose. The component whose job is to hold the
- * mapping between opaque references and private documents should not pull in a
- * framework's dependency tree to render four pages.
+ * The server itself stays on `node:http`. The component whose job is to hold the
+ * mapping between opaque references and private documents should not pull a
+ * framework's dependency tree into the process that reads private documents; the
+ * UI framework lives entirely on the other side of the wire, in files this server
+ * only ever hands out as bytes.
+ *
+ * Every response the API produces is pinned to `contract.ts` with `satisfies`.
+ * That is what keeps the client's compile-time view of these payloads honest:
+ * renaming a field in the domain model breaks this file, and a client template
+ * still reading the old name breaks the UI build.
  */
 export class ApprovalServer {
     private server?: Server;
@@ -98,15 +116,11 @@ export class ApprovalServer {
         // has to get the same shell back instead of a 404; the client's own router
         // decides from there whether the URL is actually reachable.
         if (req.method === 'GET' && CLIENT_SHELL_PATHS.has(path)) {
-            await this.serveStatic(res, 'index.html', 'text/html; charset=utf-8');
+            await this.serveShell(res);
             return;
         }
-        if (req.method === 'GET' && path === '/app.js') {
-            await this.serveStatic(res, 'app.js', 'text/javascript; charset=utf-8');
-            return;
-        }
-        if (req.method === 'GET' && path === '/styles.css') {
-            await this.serveStatic(res, 'styles.css', 'text/css; charset=utf-8');
+        if (req.method === 'GET' && isAssetPath(path)) {
+            await this.serveAsset(res, path.slice(1));
             return;
         }
 
@@ -123,16 +137,16 @@ export class ApprovalServer {
             sendJson(res, 200, {
                 actions: this.orchestrator.localPendingActions(),
                 selections: this.orchestrator.localOpenSelections(),
-                history: this.orchestrator.localHistory(50),
+                history: this.orchestrator.localHistory(50).map(toHistoryEntry),
                 serverTime: new Date().toISOString()
-            });
+            } satisfies ApiStateResponse);
             return;
         }
         if (req.method === 'GET' && path === '/api/audit') {
             const limit = Number(url.searchParams.get('limit') ?? '100');
             sendJson(res, 200, {
                 events: await this.audit.tail(Number.isFinite(limit) ? Math.min(limit, 500) : 100)
-            });
+            } satisfies ApiAuditResponse);
             return;
         }
         if (req.method === 'POST' && path === '/api/approve') {
@@ -160,7 +174,10 @@ export class ApprovalServer {
             }
             try {
                 const result = await this.orchestrator.requestReselection(actionId);
-                sendJson(res, 200, { ok: true, selection_id: result.selectionId });
+                sendJson(res, 200, {
+                    ok: true,
+                    selection_id: result.selectionId
+                } satisfies ApiReselectResponse);
             } catch (error) {
                 if (error instanceof UnknownActionError) {
                     sendJson(res, 404, { error: error.message });
@@ -179,7 +196,7 @@ export class ApprovalServer {
             }
             try {
                 await this.orchestrator.cancelSelection(selectionId);
-                sendJson(res, 200, { ok: true });
+                sendJson(res, 200, { ok: true } satisfies ApiOkResponse);
             } catch (error) {
                 sendJson(res, 409, { error: describeError(error) });
             }
@@ -204,8 +221,13 @@ export class ApprovalServer {
             return;
         }
         try {
-            const view = await this.orchestrator.approveAction(actionId, bindingHash);
-            sendJson(res, 200, { ok: true, action: view });
+            // The decision endpoints answer with nothing but an acknowledgement.
+            // The client's next state poll is what actually updates the view, and
+            // it is the only path that has to stay correct; echoing the whole
+            // local action view here as well would be a second, unused copy of
+            // private document metadata on the wire.
+            await this.orchestrator.approveAction(actionId, bindingHash);
+            sendJson(res, 200, { ok: true } satisfies ApiOkResponse);
         } catch (error) {
             if (error instanceof ApprovalConflictError) {
                 sendJson(res, 409, { error: error.message });
@@ -231,8 +253,8 @@ export class ApprovalServer {
             return;
         }
         try {
-            const view = await this.orchestrator.rejectAction(actionId, discard);
-            sendJson(res, 200, { ok: true, action: view });
+            await this.orchestrator.rejectAction(actionId, discard);
+            sendJson(res, 200, { ok: true } satisfies ApiOkResponse);
         } catch (error) {
             if (error instanceof ApprovalConflictError) {
                 sendJson(res, 409, { error: error.message });
@@ -256,7 +278,7 @@ export class ApprovalServer {
         }
         try {
             const result = await this.orchestrator.resolveSelection(selectionId, candidateId);
-            sendJson(res, 200, { ok: true, reference: result.ref });
+            sendJson(res, 200, { ok: true, reference: result.ref } satisfies ApiSelectResponse);
         } catch (error) {
             if (error instanceof ApprovalConflictError) {
                 sendJson(res, 409, { error: error.message });
@@ -282,49 +304,166 @@ export class ApprovalServer {
         return false;
     }
 
-    private async serveStatic(res: ServerResponse, name: string, contentType: string): Promise<void> {
-        // `name` is a fixed literal at every call site; normalising and rejecting
-        // separators keeps that true if someone later wires it to user input.
-        const safeName = normalize(name).replace(/^([.][.][\\/])+/, '');
-        if (safeName.includes('/') || safeName.includes('\\')) {
+    /**
+     * Serves the HTML shell with a fresh style nonce.
+     *
+     * The client framework applies component styles by inserting `<style>`
+     * elements at runtime, which `style-src 'self'` alone forbids — correctly so:
+     * the alternative, `'unsafe-inline'`, would also permit any style injected by
+     * a document title that made it into the page as markup, and this page renders
+     * attacker-influenceable strings by design. A per-response nonce keeps the
+     * blanket ban and grants exactly the framework's own styles an exception. It
+     * is generated per request and never reused, so it cannot be pre-computed by
+     * anything that only got to read an earlier response.
+     */
+    private async serveShell(res: ServerResponse): Promise<void> {
+        const nonce = randomBytes(16).toString('base64');
+        try {
+            const template = await readFile(join(this.staticRoot, 'index.html'), 'utf8');
+            if (!template.includes(NONCE_PLACEHOLDER)) {
+                // Without the placeholder the page would load and then silently
+                // render unstyled, which on an approval screen is worse than not
+                // loading at all: the layout is part of how the user tells the
+                // egress facts apart from the model's opinion about them.
+                throw new Error(
+                    `index.html enthält den Platzhalter ${NONCE_PLACEHOLDER} nicht. Wurde die Oberfläche gebaut?`
+                );
+            }
+            res.writeHead(200, {
+                'Content-Type': 'text/html; charset=utf-8',
+                ...securityHeaders(nonce)
+            });
+            res.end(template.replaceAll(NONCE_PLACEHOLDER, nonce));
+        } catch (error) {
+            this.log.error('Oberfläche nicht auslieferbar', { error: describeError(error) });
+            sendJson(res, 500, { error: 'ui_unavailable' });
+        }
+    }
+
+    /**
+     * Serves one built bundle. `name` has already been shape-checked by
+     * `isAssetPath`; resolving it and requiring the result to stay inside the
+     * asset root is the check that survives someone later loosening that pattern.
+     */
+    private async serveAsset(res: ServerResponse, name: string): Promise<void> {
+        const target = resolve(this.staticRoot, name);
+        if (target !== resolve(this.staticRoot) && !target.startsWith(resolve(this.staticRoot) + sep)) {
             sendJson(res, 400, { error: 'invalid_path' });
             return;
         }
         try {
-            const content = await readFile(join(this.staticRoot, safeName), 'utf8');
+            const content = await readFile(target);
             res.writeHead(200, {
-                'Content-Type': contentType,
-                // The page renders private document metadata; it must not be cached
-                // by anything and must not reach out to the network.
-                'Cache-Control': 'no-store',
-                'Content-Security-Policy':
-                    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'none'; connect-src 'self'; form-action 'none'; base-uri 'none'",
-                'Referrer-Policy': 'no-referrer',
-                'X-Content-Type-Options': 'nosniff',
-                'X-Frame-Options': 'DENY'
+                'Content-Type': name.endsWith('.css')
+                    ? 'text/css; charset=utf-8'
+                    : 'text/javascript; charset=utf-8',
+                ...securityHeaders()
             });
             res.end(content);
         } catch (error) {
-            this.log.error('Statische Datei nicht lesbar', { name: safeName, error: describeError(error) });
-            sendJson(res, 500, { error: 'ui_unavailable' });
+            this.log.error('Statische Datei nicht lesbar', { name, error: describeError(error) });
+            sendJson(res, 404, { error: 'not_found' });
         }
     }
 }
 
+/** Placeholder the built `index.html` carries where the style nonce belongs. */
+const NONCE_PLACEHOLDER = '__CSP_NONCE__';
+
 /**
- * Every path the client-side router (`app.js`) can land on. Kept as an
- * explicit, closed list rather than a wildcard prefix match on `/app/*` —
- * consistent with this project's general preference for closed sets over
- * open-ended matching, and it means a typo'd path 404s instead of silently
- * serving the shell.
+ * The page renders private document metadata: it must not be cached by anything,
+ * must not reach out to the network, and must not be framed. `style-src` gets the
+ * shell's one-shot nonce; asset responses get no nonce because a stylesheet has
+ * no business granting one.
  */
-const APP_TABS = ['approvals', 'selections', 'history', 'audit'] as const;
+function securityHeaders(nonce?: string): Record<string, string> {
+    const styleSrc = nonce ? `'self' 'nonce-${nonce}'` : "'self'";
+    return {
+        'Cache-Control': 'no-store',
+        'Content-Security-Policy': [
+            "default-src 'none'",
+            "script-src 'self'",
+            `style-src ${styleSrc}`,
+            "img-src 'none'",
+            "font-src 'none'",
+            "connect-src 'self'",
+            "form-action 'none'",
+            // Not 'none'. The shell's routes are nested (`/app/approvals`), its
+            // asset references are relative, and `base-uri 'none'` makes the
+            // browser ignore the `<base href="/">` that reconciles the two — the
+            // bundle then resolves to `/app/main.js` and the page never starts.
+            // `'self'` keeps the part that matters, which is that a base URI can
+            // never point at another origin.
+            "base-uri 'self'",
+            "frame-ancestors 'none'"
+        ].join('; '),
+        'Referrer-Policy': 'no-referrer',
+        'X-Content-Type-Options': 'nosniff',
+        'X-Frame-Options': 'DENY'
+    };
+}
+
+/**
+ * Which request paths may reach a file on disk at all.
+ *
+ * The bundler names its own output, so unlike the route list below this cannot be
+ * a closed set of literals. It is kept as tight as a pattern can be instead: one
+ * path segment, no separators, no leading dot, and only the two extensions the
+ * shell actually references. Source maps in particular are not servable — they
+ * are switched off in the production build, and this makes that the case even if
+ * a stray map file ends up in the directory.
+ */
+const ASSET_PATH = /^\/[A-Za-z0-9][A-Za-z0-9._-]*\.(js|css)$/;
+
+function isAssetPath(path: string): boolean {
+    return ASSET_PATH.test(path) && !path.includes('..');
+}
+
+/**
+ * Narrows a stored action to what the history table shows.
+ *
+ * Written out field by field rather than passing the record through, because the
+ * record also holds the full outgoing body and, for a dynamic-recipient target,
+ * the literal address. Neither belongs in a list view, and an explicit projection
+ * is the only version of this that stays true when the record grows a field.
+ */
+function toHistoryEntry(record: ActionRecord): ApiHistoryEntry {
+    return {
+        actionId: record.actionId,
+        resourceRef: record.resourceRef,
+        purpose: record.purpose,
+        status: record.status,
+        statusReason: record.statusReason,
+        createdAt: record.createdAt,
+        expiresAt: record.expiresAt,
+        decidedAt: record.decidedAt,
+        executedAt: record.executedAt,
+        localOutcome: record.localOutcome,
+        plan: {
+            targetId: record.plan.targetId,
+            recipientDisplay: record.plan.recipientDisplay,
+            dynamicRecipient: record.plan.dynamicRecipient,
+            subject: record.plan.subject,
+            attachments: record.plan.attachments
+        },
+        judgement: record.judgement
+    };
+}
+
+/**
+ * Every path the client-side router can land on. Kept as an explicit, closed list
+ * rather than a wildcard prefix match on `/app/*` — consistent with this project's
+ * general preference for closed sets over open-ended matching, and it means a
+ * typo'd path 404s instead of silently serving the shell. The tab names come from
+ * the shared contract, so the two routers cannot drift into a state where a route
+ * works on first click but 404s on reload.
+ */
 const CLIENT_SHELL_PATHS = new Set<string>([
     '/',
     '/index.html',
     '/login',
     '/app',
-    ...APP_TABS.map((tab) => `/app/${tab}`)
+    ...API_TAB_ROUTES.map((tab) => `/app/${tab}`)
 ]);
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
