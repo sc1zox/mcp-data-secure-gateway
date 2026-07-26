@@ -341,7 +341,7 @@ async function decide(action, kind) {
         } else if (kind === 'reselect') {
             const result = await post('/api/reselect', { action_id: action.actionId });
             toast(`Auswahl geöffnet (${result.selection_id}). Bitte im Reiter „Auswahl“ entscheiden.`, 'ok');
-            activateTab('selections');
+            navigate('/app/selections');
         }
     } catch (error) {
         toast(error.message, 'error');
@@ -557,11 +557,33 @@ function activateTab(name) {
     }
 }
 
-for (const tab of document.querySelectorAll('.tab')) {
-    tab.addEventListener('click', () => activateTab(tab.dataset.tab));
+// ----------------------------------------------------------------------- router
+
+// Real, bookmarkable URLs instead of hidden internal state: `/login` and
+// `/app/<tab>` are what the address bar shows, what back/forward navigate
+// between, and what a reload lands back on. The server serves the same shell
+// for all of them (see `CLIENT_SHELL_PATHS` in server.ts) — everything below
+// is the only place that decides what a given path actually renders.
+const TAB_NAMES = ['approvals', 'selections', 'history', 'audit'];
+
+function parseRoute(pathname) {
+    if (pathname === '/login') {
+        return { view: 'login' };
+    }
+    const match = pathname.match(/^\/app\/([a-z]+)$/);
+    if (match && TAB_NAMES.includes(match[1])) {
+        return { view: 'app', tab: match[1] };
+    }
+    if (pathname === '/app') {
+        return { view: 'app', tab: 'approvals' };
+    }
+    return { view: 'other' };
 }
 
-// --------------------------------------------------------------------- login
+function navigate(path) {
+    history.pushState(null, '', path);
+    void route();
+}
 
 function startPolling() {
     if (pollHandle) {
@@ -575,10 +597,11 @@ function stopPolling() {
     pollHandle = null;
 }
 
-function showApp() {
+function showApp(tab) {
     el.loginScreen.hidden = true;
     el.appShell.hidden = false;
     el.logout.hidden = false;
+    activateTab(tab);
 }
 
 function showLogin(message) {
@@ -594,11 +617,54 @@ function showLogin(message) {
     el.loginInput.focus();
 }
 
+/**
+ * The one auth guard. Every way a path can change — typed, bookmarked,
+ * back/forward, a login, a logout, a 401 mid-session — runs through here, so
+ * there is exactly one place that decides whether the current URL is reachable
+ * without a token, and exactly one place that decides where an authenticated
+ * visit to `/login` (or `/`, or an unknown path) actually lands.
+ */
+async function route(message) {
+    const parsed = parseRoute(location.pathname);
+    if (!TOKEN) {
+        if (parsed.view !== 'login') {
+            const next = parsed.view === 'app' ? `?next=${encodeURIComponent(location.pathname)}` : '';
+            history.replaceState(null, '', `/login${next}`);
+        }
+        showLogin(message);
+        return;
+    }
+    if (parsed.view === 'app') {
+        showApp(parsed.tab);
+        return;
+    }
+    const requestedNext = new URLSearchParams(location.search).get('next') ?? '';
+    const target = parseRoute(requestedNext).view === 'app' ? requestedNext : '/app/approvals';
+    history.replaceState(null, '', target);
+    showApp(parseRoute(target).tab);
+}
+
+for (const tab of document.querySelectorAll('.tab')) {
+    tab.addEventListener('click', (event) => {
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+            return; // let the browser do its own thing (open in new tab, etc.)
+        }
+        event.preventDefault();
+        navigate(`/app/${tab.dataset.tab}`);
+    });
+}
+
+window.addEventListener('popstate', () => {
+    void route();
+});
+
+// --------------------------------------------------------------------- login
+
 /** Ends the local session: neither the token nor its origin (URL vs. typed) is kept afterwards. */
 function logout(message) {
     TOKEN = '';
     clearStoredToken();
-    showLogin(message);
+    void route(message);
 }
 
 /**
@@ -612,9 +678,9 @@ async function authenticateAndEnter(candidateToken) {
     TOKEN = candidateToken;
     const payload = await api('/api/state');
     storeToken(TOKEN);
-    showApp();
     applyState(payload);
     startPolling();
+    await route();
 }
 
 el.loginForm.addEventListener('submit', async (event) => {
@@ -642,7 +708,7 @@ el.logout.addEventListener('click', () => logout());
 
 async function boot() {
     if (!TOKEN) {
-        showLogin();
+        await route();
         return;
     }
     try {
@@ -652,7 +718,7 @@ async function boot() {
         // fall through to a clean login rather than polling against a 401.
         TOKEN = '';
         clearStoredToken();
-        showLogin(error.status === 401 ? undefined : `Verbindung fehlgeschlagen: ${error.message}`);
+        await route(error.status === 401 ? undefined : `Verbindung fehlgeschlagen: ${error.message}`);
     }
 }
 

@@ -90,10 +90,14 @@ export class ApprovalServer {
         const path = url.pathname;
 
         // The static shell carries no data of its own — its only job is to render
-        // the login form and, once submitted, ask the API for everything else.
+        // the login form and, once authenticated, ask the API for everything else.
         // Gating it behind the token as well would make a login screen pointless:
-        // the page could never load far enough to show one.
-        if (req.method === 'GET' && (path === '/' || path === '/index.html')) {
+        // the page could never load far enough to show one. The client owns real
+        // URLs for its routes (History API, no server-side view state), so a fresh
+        // load or a reload on any of them — a bookmark, a shared link, hitting F5 —
+        // has to get the same shell back instead of a 404; the client's own router
+        // decides from there whether the URL is actually reachable.
+        if (req.method === 'GET' && CLIENT_SHELL_PATHS.has(path)) {
             await this.serveStatic(res, 'index.html', 'text/html; charset=utf-8');
             return;
         }
@@ -306,6 +310,22 @@ export class ApprovalServer {
         }
     }
 }
+
+/**
+ * Every path the client-side router (`app.js`) can land on. Kept as an
+ * explicit, closed list rather than a wildcard prefix match on `/app/*` —
+ * consistent with this project's general preference for closed sets over
+ * open-ended matching, and it means a typo'd path 404s instead of silently
+ * serving the shell.
+ */
+const APP_TABS = ['approvals', 'selections', 'history', 'audit'] as const;
+const CLIENT_SHELL_PATHS = new Set<string>([
+    '/',
+    '/index.html',
+    '/login',
+    '/app',
+    ...APP_TABS.map((tab) => `/app/${tab}`)
+]);
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
     res.writeHead(status, {

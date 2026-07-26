@@ -5,7 +5,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="referrer" content="no-referrer" />
         <title>Local Trust Gateway – Freigabe</title>
-        <link rel="stylesheet" href="styles.css" />
+        <link rel="stylesheet" href="/styles.css" />
     </head>
     <body>
         <header class="topbar">
@@ -72,14 +72,14 @@
 
         <div id="app-shell" hidden>
             <nav class="tabs" role="tablist">
-                <button class="tab is-active" data-tab="approvals" role="tab">
+                <a class="tab" href="/app/approvals" data-tab="approvals" role="tab">
                     Freigaben <span class="count" id="count-approvals">0</span>
-                </button>
-                <button class="tab" data-tab="selections" role="tab">
+                </a>
+                <a class="tab" href="/app/selections" data-tab="selections" role="tab">
                     Auswahl <span class="count" id="count-selections">0</span>
-                </button>
-                <button class="tab" data-tab="history" role="tab">Verlauf</button>
-                <button class="tab" data-tab="audit" role="tab">Protokoll</button>
+                </a>
+                <a class="tab" href="/app/history" data-tab="history" role="tab">Verlauf</a>
+                <a class="tab" href="/app/audit" data-tab="audit" role="tab">Protokoll</a>
             </nav>
 
             <main>
@@ -113,6 +113,6 @@
 
         <div id="toast" class="toast" hidden></div>
 
-        <script src="app.js" type="module"></script>
+        <script src="/app.js" type="module"></script>
     </body>
 </html>

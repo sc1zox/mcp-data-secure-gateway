@@ -86,6 +86,13 @@ verschoben) oder durch manuelles Einfügen ins Anmeldeformular, z. B. aus `data/
 verwirft die Sitzung wieder. Ohne gültiges Token bleiben alle `/api/*`-Aufrufe bei 401 — die
 Oberfläche ist bewusst kein offener lokaler Dienst.
 
+Die Reiter sind echte URLs (`/login`, `/app/freigaben` als `/app/approvals` usw.), navigiert über
+die History-API im Client — kein Framework, kein Bundler, passend zur CSP (`script-src 'self'`).
+Zurück/Vorwärts und ein Reload auf einem Reiter funktionieren; ein Aufruf von `/app/...` ohne
+gültige Sitzung landet auf `/login?next=...` und nach der Anmeldung wieder dort, wo man losging.
+Der Server kennt dieselbe geschlossene Liste an Pfaden (`CLIENT_SHELL_PATHS` in `server.ts`) und
+liefert für jeden davon dieselbe Shell aus; alles andere bleibt 404.
+
 ### Anbindung der Quelle
 
 Der Paperless-MCP-Server kann auf zwei Wegen angesprochen werden, umschaltbar über
