@@ -200,6 +200,20 @@ describe('Bindungs-Hash', () => {
         assert.notEqual(a, b);
     });
 
+    it('bindet Mitgliedschaft, Reihenfolge und Zustand der vollständigen Ressourcenmenge', () => {
+        const first = [
+            { resourceRef: 'res_1', resourceStateHash: 'state-a' },
+            { resourceRef: 'res_2', resourceStateHash: 'state-b' }
+        ];
+        const reversed = [first[1]!, first[0]!];
+        const changed = [first[0]!, { ...first[1]!, resourceStateHash: 'state-c' }];
+
+        const baseline = computeBindingHash(first, plan);
+        assert.notEqual(baseline, computeBindingHash(first.slice(0, 1), plan));
+        assert.notEqual(baseline, computeBindingHash(reversed, plan));
+        assert.notEqual(baseline, computeBindingHash(changed, plan));
+    });
+
     it('ändert sich, wenn der Nachrichtentext geändert wird', () => {
         const a = computeBindingHash('res_1', 'state', plan);
         const b = computeBindingHash('res_1', 'state', { ...plan, body: 'anderer Text' });

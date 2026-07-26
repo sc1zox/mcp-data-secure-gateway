@@ -33,7 +33,8 @@ export class TelegramTarget implements EgressTarget {
             recipientDisplay: maskChatId(this.config.chatId),
             dynamicRecipient: false,
             supportsAttachments: true,
-            maxAttachmentBytes: this.config.maxAttachmentBytes
+            maxAttachmentBytes: this.config.maxAttachmentBytes,
+            maxAttachments: this.config.maxAttachments
         };
     }
 
@@ -47,6 +48,11 @@ export class TelegramTarget implements EgressTarget {
     }
 
     async deliver(payload: EgressPayload): Promise<DeliveryReceipt> {
+        if (payload.attachments.length > this.config.maxAttachments) {
+            throw new TargetDeliveryError(
+                `Die Nachricht enthält ${payload.attachments.length} Anhänge; erlaubt sind ${this.config.maxAttachments}.`
+            );
+        }
         const total = payload.attachments.reduce((sum, item) => sum + item.bytes.byteLength, 0);
         if (total > this.config.maxAttachmentBytes) {
             throw new TargetDeliveryError(

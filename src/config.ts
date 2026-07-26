@@ -128,6 +128,8 @@ const mailTargetSchema = z.object({
      * that should stay a truly fixed destination.
      */
     allowDynamicRecipient: z.boolean().default(false),
+    /** Per-message attachment count limit. Enforced before any originals are read. */
+    maxAttachments: z.number().int().min(1).max(50).default(10),
     maxAttachmentBytes: z
         .number()
         .int()
@@ -145,6 +147,7 @@ const telegramTargetSchema = z.object({
     /** The one and only chat. Not overridable at runtime. */
     chatId: z.string().min(1),
     apiBaseUrl: z.string().url().default('https://api.telegram.org'),
+    maxAttachments: z.number().int().min(1).max(50).default(10),
     maxAttachmentBytes: z
         .number()
         .int()

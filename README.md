@@ -175,12 +175,15 @@ vorbereitete Aktionen) und ist rein lokal: die Egress-Prüfung weist jede Antwor
    lokale Modell entscheiden. Ergebnis: eine Referenz, ein Hinweis auf notwendige lokale Auswahl,
    oder „nicht gefunden“.
 2. **`list_targets()`** — die erlaubten abstrakten Zielbezeichnungen und ihr Zweck.
-3. **`prepare_action(reference, target, purpose, [subject], [body], [note], [recipient])`** —
-   verbindet Referenz, Ziel und Zweck zu einer Aktion. Es wird nichts übertragen; die Aktion
-   wartet auf die lokale Freigabe.
-4. **Lokale Freigabe** — die Oberfläche zeigt Ressource, Quelle, Ziel, Zweck, die geplante Aktion,
-   die genauen ausgehenden Daten samt SHA-256, die Bewertung des lokalen Modells und offene Punkte.
-   Möglich sind: freigeben, ablehnen, andere Ressource wählen, verwerfen.
+3. **`prepare_action(reference, target, purpose, …)`** oder
+   **`prepare_action(references, target, purpose, …)`** — verbindet genau eine Referenz (alte,
+   weiterhin unterstützte Form) oder eine geordnete Liste opaker Referenzen mit Ziel und Zweck.
+   Es wird nichts übertragen; die vollständige Anhangsmenge wartet gemeinsam auf die lokale
+   Freigabe.
+4. **Lokale Freigabe** — die Oberfläche zeigt alle Ressourcen und Quellen, Ziel, Zweck, die
+   geplante Aktion, die genauen ausgehenden Daten samt SHA-256, die Bewertungen des lokalen Modells
+   und offene Punkte. Möglich sind: freigeben, ablehnen, bei Einzelaktionen eine andere Ressource
+   wählen, verwerfen.
 5. **`get_action_status(action_id)`** — `awaiting_local_approval`, `selection_required`,
    `executing`, `completed`, `rejected`, `failed` oder `expired`.
 6. **`await_action_decision(action_id, [timeout_seconds])`** — dasselbe Statusobjekt, aber erst
@@ -203,9 +206,9 @@ behandelt das Gateway die Textlage als eigene, festgehaltene Tatsache:
   keinen, und Schlagwörter kommen teils als blanke Kennungen. Das Gateway liest jeden Kandidaten
   über das `get`-Werkzeug nach und löst Schlagwort-Kennungen gegen die Schlagwortliste auf.
   Kennungen, die sich nicht auflösen lassen, entfallen — eine Zahl ist kein Merkmal.
-- **Vor `prepare_action` wird der Volltext gelesen** und der Bewertung mitgegeben, nicht der kurze
-  Suchauszug. Der Prompt nennt ausdrücklich, wie viele Zeichen vorliegen, und ob es sich um den
-  Volltext, nur einen Auszug oder gar nichts handelt.
+- **Vor `prepare_action` wird für jede Referenz der Volltext gelesen** und einer eigenen Bewertung
+  mitgegeben, nicht nur der kurze Suchauszug. Der Prompt nennt ausdrücklich, wie viele Zeichen
+  vorliegen, und ob es sich um den Volltext, nur einen Auszug oder gar nichts handelt.
 - **Das Modell meldet zurück, ob es geprüft hat** (`contentChecked`). Lag kein Text vor, verwirft das
   Gateway diese Angabe, setzt `purposeMatch` auf false und empfiehlt die manuelle Prüfung: eine
   behauptete Prüfung von etwas Unlesbarem ist keine Prüfung.
@@ -330,12 +333,51 @@ des Dokuments zu nennen.
 Eine Freigabe gilt nur für die konkret angezeigte Kombination. Technisch: die Oberfläche schickt
 den angezeigten Bindungs-Hash zurück; passt er nicht mehr zum gespeicherten Datensatz, wird die
 Freigabe verweigert statt auf etwas anderes angewendet. Zusätzlich wird vor der Vorbereitung und
-vor der Ausführung geprüft, ob sich der Zustand der Ressource geändert hat — ein in Paperless
-nachträglich bearbeitetes Dokument bricht die Aktion ab.
+unmittelbar vor der Ausführung die **gesamte** geordnete Ressourcenmenge geprüft. Erst wenn alle
+Metadatenprüfungen abgeschlossen und alle Zustände unverändert sind, werden die freigegebenen Bytes
+zusammengestellt; ein in Paperless nachträglich bearbeitetes Dokument bricht die komplette Aktion
+ab, ohne dass ein Teil versandt wird.
 
-Der Hash benennt auch, wohin die Freigabe gilt: eine Zielkennung bei einem Versand, `cloud_agent`
-bei einer Zusammenfassung. Ein gespeicherter Plan kann dadurch nicht als die jeweils andere Art
-Aktion gelesen werden, selbst wenn sonst alles daran passte.
+Der Hash deckt bei einem Versand Mitgliedschaft, Reihenfolge und Zustands-Hash jeder Referenz sowie
+die geordnete Anhangsliste mit Dateiname, Medientyp, Größe und SHA-256 ab. Er benennt auch, wohin
+die Freigabe gilt: eine Zielkennung bei einem Versand, `cloud_agent` bei einer Zusammenfassung.
+Ein gespeicherter Plan kann dadurch weder umsortiert oder ergänzt noch als die jeweils andere Art
+Aktion gelesen werden.
+
+## Mehrere Anhänge
+
+`prepare_action` akzeptiert genau eine von zwei Eingabeformen:
+
+```json
+{
+  "reference": "res_7f29a1c4b8de",
+  "target": "private_mail",
+  "purpose": "Bewerbung auf eine Stelle"
+}
+```
+
+```json
+{
+  "references": ["res_7f29a1c4b8de", "res_a6d350ac92f1"],
+  "target": "job_application_mail",
+  "purpose": "Bewerbung auf eine Stelle",
+  "recipient": "jobs@example.org",
+  "subject": "Bewerbung",
+  "body": "Guten Tag,\n\nanbei meine Unterlagen."
+}
+```
+
+`reference` und `references` zugleich, eine leere Liste, doppelte oder nicht opak geformte
+Referenzen werden abgelehnt. Jede Referenz muss für exakt denselben angegebenen Zweck geprägt,
+noch gültig, erreichbar und unverändert sein. `list_targets` meldet `max_attachments`; lokal setzt
+`targets[].maxAttachments` diese Obergrenze (Standard 10, höchstens 50). `maxAttachmentBytes` gilt
+für die Summe aller Anhänge einer Nachricht, nicht pro Datei.
+
+Die Freigabeoberfläche zeigt jede lokale Ressource mit Quelle, Kennung, Link, Inhaltsgrundlage und
+eigener Modellbewertung sowie jeden ausgehenden Anhang mit Dateiname, Medientyp, Größe und SHA-256.
+Der Bestätigungsdialog wiederholt die vollständige Ressourcen- und Anhangsmenge. Erst ein Klick auf
+diese eine vollständige Aktion erlaubt den Versand; eine Einzelressource einer Mehrfachaktion lässt
+sich nicht nachträglich austauschen.
 
 ### Zur Behandlung von Dokumentinhalten
 
@@ -422,9 +464,9 @@ nicht Interna. `test/helpers.ts` stellt Quelle, Ziel und lokales Modell als Doub
   nicht verwendet — der Approval-Server läuft auf `node:http`, und der MCP-Endpunkt geht nicht
   über den betroffenen Pfad. Ein Fix erfordert einen Downgrade des SDK und wurde nicht gemacht.
 - Die Originaldaten einer vorbereiteten Aktion liegen bis zur Entscheidung im Speicher, damit die
-  Freigabeansicht Größe und Prüfsumme des tatsächlichen Anhangs nennen kann. Nach einem Neustart
-  ist dieser Zwischenspeicher leer; die Bytes werden dann bei der Freigabe erneut gelesen und gegen
-  die freigegebene Prüfsumme verglichen.
+  Freigabeansicht Größe und Prüfsumme aller tatsächlichen Anhänge nennen kann. Nach einem Neustart
+  ist dieser Zwischenspeicher leer; die vollständige Menge wird dann bei der Freigabe erneut gelesen
+  und jeder Anhang gegen Metadaten, Größe und freigegebene Prüfsumme verglichen.
 - Ein Ziel ohne Anhangsunterstützung ist im Modell vorgesehen (`supportsAttachments`), aber beide
   ausgelieferten Ziele können Anhänge, daher gibt es dafür noch keinen Nur-Text-Pfad.
 

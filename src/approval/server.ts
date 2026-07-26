@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve, sep } from 'node:path';
 import type { GatewayConfig } from '../config.js';
 import { ApprovalConflictError, UnknownActionError, type Orchestrator } from '../core/orchestrator.js';
-import type { ActionRecord } from '../core/types.js';
+import { resourceBindingsOf, type ActionRecord } from '../core/types.js';
 import type { AuditLog } from '../store/auditLog.js';
 import { safeEqual } from '../util/hash.js';
 import { createLogger, describeError, type Logger } from '../util/log.js';
@@ -436,6 +436,7 @@ function toHistoryEntry(record: ActionRecord): ApiHistoryEntry {
     return {
         actionId: record.actionId,
         resourceRef: record.resourceRef,
+        resourceRefs: resourceBindingsOf(record).map((binding) => binding.resourceRef),
         purpose: record.purpose,
         status: record.status,
         statusReason: record.statusReason,

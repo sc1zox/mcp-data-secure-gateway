@@ -36,8 +36,9 @@ export interface PrivateSource {
     fetchMetadata(nativeId: string): Promise<InternalResource | undefined>;
 
     /**
-     * Retrieves the original bytes. Called at most once per action, after the
-     * user approved it — never during search, and never on Hermes's behalf.
+     * Retrieves the original bytes. Read while preparing an action so the local
+     * approval can show the exact digest, and read again only when staging was
+     * lost (for example after a restart). It is never returned to Hermes.
      */
     fetchOriginal(nativeId: string): Promise<SourceFile>;
 

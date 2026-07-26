@@ -46,7 +46,8 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
                 'Dieses Gateway vermittelt kontrollierten Zugriff auf private Dienste des Nutzers.',
                 '',
                 'Ablauf: find_resource (Beschreibung + Zweck) liefert eine opake Referenz.',
-                'list_targets nennt die erlaubten Ziele. prepare_action verbindet Referenz, Ziel',
+                'list_targets nennt die erlaubten Ziele. prepare_action verbindet eine oder mehrere',
+                'Referenzen, Ziel',
                 'und Zweck zu einer Aktion, die auf die lokale Freigabe des Nutzers wartet.',
                 'get_action_status meldet den Fortschritt, await_action_decision wartet auf die',
                 'Entscheidung des Nutzers. Ein Rückruf an den Agenten findet nicht statt: das',
@@ -125,6 +126,7 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
             description: [
                 'Nennt die lokal konfigurierten Ziele und ihren Zweck. Nur diese abstrakten',
                 'Bezeichnungen sind in prepare_action verwendbar. Jedes Ziel meldet',
+                'max_attachments als lokal konfigurierte Obergrenze.',
                 'dynamic_recipient: true bedeutet, prepare_action braucht dafür einen',
                 'recipient-Parameter; false bedeutet, der Empfänger ist fest und ein',
                 'angegebener recipient wird abgelehnt.'
@@ -139,11 +141,14 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
         {
             title: 'Aktion vorbereiten',
             description: [
-                'Verbindet eine Ressourcenreferenz mit einem erlaubten Ziel und einem Zweck und',
+                'Verbindet eine oder mehrere Ressourcenreferenzen mit einem erlaubten Ziel und',
                 'bereitet daraus eine Aktion vor. Es wird nichts übertragen: die Aktion wartet auf',
                 'die ausdrückliche lokale Freigabe des Nutzers.',
                 '',
-                'Der Zweck muss dem Zweck der Suche entsprechen, mit der die Referenz entstanden ist.',
+                'Genau eines der Felder reference (bisherige Einzelform) oder references (geordnete',
+                'Liste für einen oder mehrere Anhänge) muss gesetzt sein. Der Zweck muss bei jeder',
+                'Referenz dem Zweck der Suche entsprechen, mit der sie entstanden ist. Doppelte',
+                'Referenzen werden abgelehnt.',
                 'recipient ist nur für Ziele mit dynamic_recipient=true zulässig (dort zwingend);',
                 'bei jedem anderen Ziel führt ein angegebener recipient zur Ablehnung der Anfrage.',
                 '',
@@ -157,7 +162,24 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
                 'auf die Entscheidung des Nutzers warten.'
             ].join('\n'),
             inputSchema: {
-                reference: z.string().min(1).max(64).describe('Opake Ressourcenreferenz aus find_resource.'),
+                reference: z
+                    .string()
+                    .min(1)
+                    .max(64)
+                    .optional()
+                    .describe(
+                        'Bisherige Einzelform: genau eine opake Ressourcenreferenz aus find_resource. ' +
+                            'Nicht zusammen mit references angeben.'
+                    ),
+                references: z
+                    .array(z.string().min(1).max(64))
+                    .min(1)
+                    .max(50)
+                    .optional()
+                    .describe(
+                        'Geordnete, duplikatfreie Liste opaker Ressourcenreferenzen aus find_resource. ' +
+                            'Nicht zusammen mit reference angeben; list_targets nennt max_attachments.'
+                    ),
                 target: z
                     .string()
                     .min(1)
@@ -214,6 +236,7 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
         async (args) => {
             const result = await orchestrator.prepareAction({
                 reference: args.reference,
+                references: args.references,
                 target: args.target,
                 purpose: args.purpose,
                 note: args.note,

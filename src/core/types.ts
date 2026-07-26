@@ -120,6 +120,20 @@ export interface PlannedAttachment {
 }
 
 /**
+ * One member of the exact resource set an action was prepared against.
+ *
+ * The ordered list of these bindings is covered by the approval hash. Keeping
+ * the judgement next to its resource also lets the local approval page show
+ * what was checked for every attachment instead of presenting the first
+ * document's assessment as if it covered the whole set.
+ */
+export interface ActionResourceBinding {
+    resourceRef: string;
+    resourceStateHash: string;
+    judgement: JudgementRecord;
+}
+
+/**
  * The frozen plan: precisely what leaves the machine if the user approves.
  * Every field here is covered by the binding hash — including `recipientAddress`,
  * so an approval binds to one exact address and cannot be replayed against another.
@@ -262,12 +276,24 @@ export interface JudgementRecord {
 
 export interface ActionRecord {
     actionId: string;
+    /**
+     * First resource of the action. Retained for records written before
+     * multi-attachment support and for local audit compatibility.
+     */
     resourceRef: string;
-    /** Copied from the reference at prepare time; an approval is void if it drifts. */
+    /** State of `resourceRef`; legacy single-resource compatibility. */
     resourceStateHash: string;
+    /**
+     * Exact ordered resource set for new records. Absent means the legacy pair
+     * above is the complete (single-member) set.
+     */
+    resourceBindings?: ActionResourceBinding[];
     purpose: string;
     plan: ActionPlan;
-    /** Hash over (resourceRef, resourceStateHash, targetId, plan). Pins the approval. */
+    /**
+     * Hash over the ordered resource/state set, destination and plan. Legacy
+     * records use the equivalent single-resource form.
+     */
     bindingHash: string;
     judgement: JudgementRecord;
     status: ActionStatus;
@@ -279,6 +305,19 @@ export interface ActionRecord {
     executedAt?: string;
     /** Short local note about the outcome, e.g. delivery id. Not egressed verbatim. */
     localOutcome?: string;
+}
+
+/** Ordered resource bindings, with a lossless fallback for persisted legacy actions. */
+export function resourceBindingsOf(record: ActionRecord): ActionResourceBinding[] {
+    return (
+        record.resourceBindings ?? [
+            {
+                resourceRef: record.resourceRef,
+                resourceStateHash: record.resourceStateHash,
+                judgement: record.judgement
+            }
+        ]
+    );
 }
 
 /**
@@ -353,6 +392,8 @@ export interface TargetDescriptor {
     dynamicRecipient: boolean;
     /** Whether the target can carry file attachments. */
     supportsAttachments: boolean;
-    /** Upper bound on attachment size in bytes, if the transport imposes one. */
+    /** Upper bound on the total bytes of all attachments in one transfer. */
     maxAttachmentBytes?: number;
+    /** Maximum number of attachments accepted in one approved transfer. */
+    maxAttachments?: number;
 }

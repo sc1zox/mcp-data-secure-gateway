@@ -1,5 +1,5 @@
 import type { ActionPlan, ActionRecord, ActionStatus, ActionStatusReason } from '../core/types.js';
-import { TERMINAL_ACTION_STATUSES, targetIdOf } from '../core/types.js';
+import { resourceBindingsOf, TERMINAL_ACTION_STATUSES, targetIdOf } from '../core/types.js';
 import { JsonlStore, storePath } from './jsonlStore.js';
 import type { AuditLog } from './auditLog.js';
 
@@ -90,6 +90,7 @@ export class ActionStore {
         if (this.store.has(record.actionId)) {
             throw new ActionImmutabilityError(`Aktion ${record.actionId} existiert bereits.`);
         }
+        const bindings = resourceBindingsOf(record);
         await this.store.put(record);
         await this.audit.record('action_prepared', {
             actionId: record.actionId,
@@ -98,7 +99,11 @@ export class ActionStore {
             detail: {
                 purpose: record.purpose,
                 bindingHash: record.bindingHash,
-                resourceStateHash: record.resourceStateHash,
+                resourceBindings: bindings.map(({ resourceRef, resourceStateHash, judgement }) => ({
+                    resourceRef,
+                    resourceStateHash,
+                    judgement
+                })),
                 ...planAuditDetail(record.plan),
                 judgement: record.judgement,
                 expiresAt: record.expiresAt

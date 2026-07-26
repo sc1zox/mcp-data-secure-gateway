@@ -3,7 +3,7 @@ import { after, describe, it } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createHermesServer } from '../src/mcp/hermesServer.js';
-import { makeHarness, type Harness } from './helpers.js';
+import { makeHarness, makeResource, type Harness } from './helpers.js';
 
 /**
  * The MCP surface as Hermes actually meets it.
@@ -69,6 +69,63 @@ describe('Werkzeugoberfläche', () => {
             'prepare_action',
             'summarize_resource'
         ]);
+    });
+
+    it('nimmt eine geordnete Liste opaker Referenzen an, ohne Anhangsdaten zurückzugeben', async () => {
+        const first = makeResource({
+            title: 'Lebenslauf intern',
+            locator: { sourceId: 'fake', nativeId: '4711' },
+            stateToken: 'cv:v1'
+        });
+        const second = makeResource({
+            title: 'Anschreiben intern',
+            locator: { sourceId: 'fake', nativeId: '4712' },
+            stateToken: 'letter:v1'
+        });
+        const { client, harness } = await connect({ resources: [first] });
+        const foundFirst = await call(client, 'find_resource', { query: 'Lebenslauf', purpose: PURPOSE });
+        harness.source.resources = [second];
+        const foundSecond = await call(client, 'find_resource', { query: 'Anschreiben', purpose: PURPOSE });
+        harness.source.resources = [first, second];
+        harness.source.files.set('4711', {
+            filename: 'lebenslauf.pdf',
+            mimeType: 'application/pdf',
+            bytes: new Uint8Array([1, 2, 3])
+        });
+        harness.source.files.set('4712', {
+            filename: 'anschreiben.pdf',
+            mimeType: 'application/pdf',
+            bytes: new Uint8Array([4, 5, 6])
+        });
+
+        const state = await call(client, 'prepare_action', {
+            references: [foundFirst.resource.reference, foundSecond.resource.reference],
+            target: 'private_mail',
+            purpose: PURPOSE
+        });
+
+        assert.equal(state.status, 'awaiting_local_approval');
+        assert.deepEqual(Object.keys(state).sort(), ['action_id', 'note', 'reason', 'status']);
+        assert.doesNotMatch(JSON.stringify(state), /Lebenslauf intern|Anschreiben intern|4711|4712|fake/);
+        const view = harness.orchestrator.localAction(state.action_id);
+        assert.ok(view?.kind === 'send_resource');
+        assert.equal(view.resources.length, 2);
+        assert.equal(view.egress.attachments.length, 2);
+    });
+
+    it('behält die bisherige einzelne reference-Form an der MCP-Grenze bei', async () => {
+        const { client } = await connect();
+        const found = await call(client, 'find_resource', { query: QUERY, purpose: PURPOSE });
+        const targets = await call(client, 'list_targets', {});
+        assert.equal(targets.targets[0].max_attachments, 10);
+
+        const state = await call(client, 'prepare_action', {
+            reference: found.resource.reference,
+            target: 'private_mail',
+            purpose: PURPOSE
+        });
+
+        assert.equal(state.status, 'awaiting_local_approval');
     });
 });
 

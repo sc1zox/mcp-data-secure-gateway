@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, input, output } from '@an
 import { MatButtonModule } from '@angular/material/button';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatTooltipModule } from '@angular/material/tooltip';
-import type { ApiSendActionView } from '@gateway/contract';
+import type { ApiJudgement, ApiSendActionView } from '@gateway/contract';
 import { formatAttributes, formatBytes, formatConfidence, formatTime } from '../core/format';
 import { CountdownLabel } from '../shared/countdown';
 import { Field, Fields } from '../shared/fields';
@@ -44,13 +44,13 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
         <article class="detail">
             <header class="head">
                 <div class="head-main">
-                    <h2>{{ action().resource.safeLabel }}</h2>
+                    <h2>{{ heading() }}</h2>
                     <p class="ltg-mono ltg-muted">
-                        Referenz {{ action().resource.ref }} · Aktion {{ action().actionId }}
+                        {{ referenceLine() }} · Aktion {{ action().actionId }}
                     </p>
                 </div>
                 <div class="head-side">
-                    <ltg-sensitivity [level]="action().judgement.sensitivity" />
+                    <ltg-sensitivity [level]="overallSensitivity()" />
                     <ltg-countdown [expiresAt]="action().expiresAt" />
                 </div>
             </header>
@@ -129,7 +129,7 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
                     @if (action().egress.attachments.length > 0) {
                         <p class="label">Anhänge</p>
                         <ul class="files">
-                            @for (file of action().egress.attachments; track file.sha256) {
+                            @for (file of action().egress.attachments; track $index) {
                                 <li>
                                     <span class="file-name">{{ file.filename }}</span>
                                     <span class="ltg-muted">{{ file.mimeType }}</span>
@@ -152,45 +152,51 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
                         <ltg-icon name="document" [size]="16" />
                         Herkunft
                     </h3>
-                    <ltg-fields>
-                        <ltg-field label="Ressource">{{ action().resource.title }}</ltg-field>
-                        <ltg-field label="Datenquelle">
-                            {{ action().resource.sourceLabel }}
-                            <span class="ltg-mono ltg-muted">
-                                (Kennung {{ action().resource.nativeIdDisplay }})
-                            </span>
-                            @if (action().resource.webUrl; as href) {
-                                <a
-                                    class="open-source"
-                                    [href]="href"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                >
-                                    Dokument öffnen
-                                    <ltg-icon name="chevron" [size]="14" />
-                                </a>
+                    @for (resource of action().resources; track resource.ref; let index = $index) {
+                        <div class="resource-card">
+                            <p class="resource-number">
+                                Anhang {{ index + 1 }} von {{ action().resources.length }}
+                            </p>
+                            <ltg-fields>
+                                <ltg-field label="Ressource">{{ resource.title }}</ltg-field>
+                                <ltg-field label="Referenz">
+                                    <span class="ltg-mono">{{ resource.ref }}</span>
+                                </ltg-field>
+                                <ltg-field label="Datenquelle">
+                                    {{ resource.sourceLabel }}
+                                    <span class="ltg-mono ltg-muted">
+                                        (Kennung {{ resource.nativeIdDisplay }})
+                                    </span>
+                                    @if (resource.webUrl; as href) {
+                                        <a
+                                            class="open-source"
+                                            [href]="href"
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                        >
+                                            Dokument öffnen
+                                            <ltg-icon name="chevron" [size]="14" />
+                                        </a>
+                                    }
+                                </ltg-field>
+                                @if (resource.modifiedAt) {
+                                    <ltg-field label="Geändert">{{ resourceModifiedAt(resource) }}</ltg-field>
+                                }
+                                @if (resourceAttributes(resource); as value) {
+                                    <ltg-field label="Merkmale">{{ value }}</ltg-field>
+                                }
+                            </ltg-fields>
+
+                            @if (resourceExcerpt(resource); as text) {
+                                <p class="label">Inhaltsauszug aus der Quelle</p>
+                                <pre class="excerpt">{{ text }}</pre>
                             }
-                        </ltg-field>
+                        </div>
+                    }
+                    <ltg-fields>
                         <ltg-field label="Zweck">{{ action().purpose }}</ltg-field>
                         <ltg-field label="Vorbereitet">{{ createdAt() }}</ltg-field>
-                        @if (action().resource.modifiedAt) {
-                            <ltg-field label="Geändert">{{ modifiedAt() }}</ltg-field>
-                        }
-                        @if (attributes()) {
-                            <ltg-field label="Merkmale">{{ attributes() }}</ltg-field>
-                        }
                     </ltg-fields>
-
-                    <!--
-                        The document's own words, so the decision can rest on
-                        something other than a title and a model's paragraph
-                        about it. Absent when the source holds no text — which is
-                        itself worth seeing, and the judgement block says so.
-                    -->
-                    @if (excerpt(); as text) {
-                        <p class="label">Inhaltsauszug aus der Quelle</p>
-                        <pre class="excerpt">{{ text }}</pre>
-                    }
                 </section>
 
                 <mat-divider />
@@ -198,32 +204,41 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
                 <!-- 3. The opinion, marked as one. -->
                 <section class="judgement">
                     <h3 class="section-head quiet">Einschätzung des lokalen Modells</h3>
-                    <p class="model ltg-muted">
-                        {{ action().judgement.model }} · Konfidenz {{ confidence() }}
-                    </p>
+                    @for (resource of action().resources; track resource.ref; let index = $index) {
+                        <div class="resource-judgement">
+                            <p class="resource-number">
+                                Anhang {{ index + 1 }}: {{ resource.safeLabel }}
+                            </p>
+                            <p class="model ltg-muted">
+                                {{ resource.judgement.model }} · Konfidenz
+                                {{ judgementConfidence(resource.judgement) }}
+                            </p>
+                            <p
+                                class="basis"
+                                [class.weak]="!contentVerified(resource.judgement)"
+                            >
+                                <ltg-icon
+                                    [name]="contentVerified(resource.judgement) ? 'check' : 'alert'"
+                                    [size]="14"
+                                />
+                                <span>{{ basisText(resource.judgement) }}</span>
+                            </p>
 
-                    <!--
-                        Before the verdict, not after it: the sentence below is
-                        worth as much as what it was written from, and a reader
-                        who meets the confident prose first has already formed an
-                        impression by the time a footnote corrects it.
-                    -->
-                    <p class="basis" [class.weak]="!contentVerified()">
-                        <ltg-icon [name]="contentVerified() ? 'check' : 'alert'" [size]="14" />
-                        <span>{{ basisText() }}</span>
-                    </p>
+                            <p class="reasoning">{{ resource.judgement.reasoning }}</p>
 
-                    <p class="reasoning">{{ action().judgement.reasoning }}</p>
-
-                    @if (uncertainties().length > 0) {
-                        <p class="label">Offene Punkte</p>
-                        <ul class="open-points">
-                            @for (point of uncertainties(); track point) {
-                                <li>{{ point }}</li>
+                            @if (resource.judgement.uncertainties.length > 0) {
+                                <p class="label">Offene Punkte</p>
+                                <ul class="open-points">
+                                    @for (point of resource.judgement.uncertainties; track point) {
+                                        <li>{{ point }}</li>
+                                    }
+                                </ul>
+                            } @else {
+                                <p class="ltg-muted small">
+                                    Das Modell hat keine offenen Punkte gemeldet.
+                                </p>
                             }
-                        </ul>
-                    } @else {
-                        <p class="ltg-muted small">Das Modell hat keine offenen Punkte gemeldet.</p>
+                        </div>
                     }
                 </section>
 
@@ -256,15 +271,17 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
                     Ablehnen
                 </button>
                 <span class="spacer"></span>
-                <button
-                    matButton
-                    type="button"
-                    [disabled]="busy()"
-                    matTooltip="Öffnet eine lokale Auswahl. Die Aktion pausiert dabei nur: bestätigst du das bisherige Dokument, wartet sie unverändert weiter."
-                    (click)="decide.emit('reselect')"
-                >
-                    Andere Ressource wählen
-                </button>
+                @if (action().resources.length === 1) {
+                    <button
+                        matButton
+                        type="button"
+                        [disabled]="busy()"
+                        matTooltip="Öffnet eine lokale Auswahl. Die Aktion pausiert dabei nur: bestätigst du das bisherige Dokument, wartet sie unverändert weiter."
+                        (click)="decide.emit('reselect')"
+                    >
+                        Andere Ressource wählen
+                    </button>
+                }
                 <button
                     matButton
                     type="button"
@@ -428,6 +445,20 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
 
         .open-source:hover {
             text-decoration: underline;
+        }
+
+        .resource-card + .resource-card,
+        .resource-judgement + .resource-judgement {
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--mat-sys-outline-variant);
+        }
+
+        .resource-number {
+            margin: 0 0 0.55rem;
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: var(--mat-sys-on-surface-variant);
         }
 
         .body-text {
@@ -598,15 +629,22 @@ export class ApprovalDetail {
     protected readonly subject = computed(
         () => this.action().egress.subject || '– kein Betreff –'
     );
+    protected readonly heading = computed(() => {
+        const resources = this.action().resources;
+        return resources.length === 1
+            ? resources[0]!.safeLabel
+            : `${resources.length} Anhänge zur Freigabe`;
+    });
+    protected readonly referenceLine = computed(() => {
+        const references = this.action().resources.map((resource) => resource.ref);
+        return `${references.length === 1 ? 'Referenz' : 'Referenzen'} ${references.join(', ')}`;
+    });
+    protected readonly overallSensitivity = computed(() => {
+        const levels = this.action().resources.map((resource) => resource.judgement.sensitivity);
+        return levels.includes('high') ? 'high' : levels.includes('medium') ? 'medium' : 'low';
+    });
     protected readonly totalBytes = computed(() => formatBytes(this.action().egress.totalBytes));
     protected readonly createdAt = computed(() => formatTime(this.action().createdAt));
-    protected readonly modifiedAt = computed(() => formatTime(this.action().resource.modifiedAt));
-    protected readonly attributes = computed(() => formatAttributes(this.action().resource.attributes));
-    protected readonly confidence = computed(() => formatConfidence(this.action().judgement.confidence));
-    protected readonly uncertainties = computed(() => this.action().judgement.uncertainties);
-    protected readonly excerpt = computed(() => this.action().resource.excerpt?.trim() || null);
-
-    private readonly basis = computed(() => this.action().judgement.basis);
 
     /**
      * True only for the one case that deserves no caveat: the model read the
@@ -614,13 +652,13 @@ export class ApprovalDetail {
      * describe. Everything else — an excerpt, an unconfirmed reading, metadata
      * alone, or a record from before the gateway tracked this — is marked.
      */
-    protected readonly contentVerified = computed(() => {
-        const basis = this.basis();
+    protected contentVerified(judgement: ApiJudgement): boolean {
+        const basis = judgement.basis;
         return basis?.kind === 'fulltext' && basis.contentChecked;
-    });
+    }
 
-    protected readonly basisText = computed(() => {
-        const basis = this.basis();
+    protected basisText(judgement: ApiJudgement): string {
+        const basis = judgement.basis;
         if (!basis) {
             return 'Aus einer älteren Version: es ist nicht festgehalten, ob das Modell den Dokumentinhalt gesehen hat.';
         }
@@ -634,7 +672,25 @@ export class ApprovalDetail {
         return basis.contentChecked
             ? `${seen} Das Modell bestätigt, dass der Inhalt zu Titel und Zweck passt.`
             : `${seen} Das Modell hat nicht bestätigt, dass der Inhalt zu Titel und Zweck passt.`;
-    });
+    }
+
+    protected judgementConfidence(judgement: ApiJudgement): string {
+        return formatConfidence(judgement.confidence);
+    }
+
+    protected resourceModifiedAt(resource: ApiSendActionView['resources'][number]): string {
+        return formatTime(resource.modifiedAt);
+    }
+
+    protected resourceAttributes(resource: ApiSendActionView['resources'][number]): string {
+        return formatAttributes(resource.attributes);
+    }
+
+    protected resourceExcerpt(
+        resource: ApiSendActionView['resources'][number]
+    ): string | null {
+        return resource.excerpt?.trim() || null;
+    }
 
     private readonly authored = computed(() => this.action().egress.authoredByAgent);
     protected readonly agentWroteAnything = computed(

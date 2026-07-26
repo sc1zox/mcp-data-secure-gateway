@@ -92,8 +92,15 @@ export interface ApproveDialogData {
                 }
 
                 <dl class="facts">
-                    <dt>Ressource</dt>
-                    <dd>{{ action.resource.title }}</dd>
+                    <dt>Ressourcen</dt>
+                    <dd>
+                        @for (resource of action.resources; track resource.ref; let index = $index) {
+                            <span class="file">
+                                {{ index + 1 }}. {{ resource.title }}
+                                <span class="ltg-muted">({{ resource.ref }})</span>
+                            </span>
+                        }
+                    </dd>
 
                     <dt>Ziel</dt>
                     <dd>
@@ -125,15 +132,16 @@ export interface ApproveDialogData {
                     <dd>
                         {{ action.egress.attachments.length }} ·
                         {{ totalBytes() }}
-                        @for (attachment of action.egress.attachments; track attachment.sha256) {
+                        @for (attachment of action.egress.attachments; track $index) {
                             <span class="file">{{ attachment.filename }}</span>
                         }
                     </dd>
                 </dl>
 
                 <p class="scope">
-                    Die Freigabe gilt ausschließlich für genau diese Kombination aus Ressource,
-                    Ziel und Inhalt. Ändert sich davon etwas, verfällt sie.
+                    Die Freigabe gilt ausschließlich für genau diese geordnete Ressourcen- und
+                    Anhangsmenge, dieses Ziel und diesen Inhalt. Ändert sich davon etwas, verfällt
+                    sie.
                 </p>
 
                 @if (action.target.dynamicRecipient) {

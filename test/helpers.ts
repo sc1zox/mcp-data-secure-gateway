@@ -53,9 +53,12 @@ export class FakeSource implements PrivateSource {
     readonly label = 'Testquelle';
     available = true;
     searchCalls: string[] = [];
+    metadataFetches: string[] = [];
     originalFetches: string[] = [];
     textFetches: string[] = [];
     bytes = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    /** Optional per-resource originals for multi-attachment boundary tests. */
+    files = new Map<string, SourceFile>();
     failSearch = false;
     /** Set to undefined to model a resource with no extractable text. */
     text: string | undefined = 'Lebenslauf von Max Mustermann, Musterstraße 1, geboren 1985.';
@@ -77,11 +80,20 @@ export class FakeSource implements PrivateSource {
     }
 
     async fetchMetadata(nativeId: string): Promise<InternalResource | undefined> {
+        this.metadataFetches.push(nativeId);
         return this.resources.find((resource) => resource.locator.nativeId === nativeId);
     }
 
     async fetchOriginal(nativeId: string): Promise<SourceFile> {
         this.originalFetches.push(nativeId);
+        const configured = this.files.get(nativeId);
+        if (configured) {
+            return {
+                filename: configured.filename,
+                mimeType: configured.mimeType,
+                bytes: configured.bytes.slice()
+            };
+        }
         return { filename: 'lebenslauf.pdf', mimeType: 'application/pdf', bytes: this.bytes };
     }
 
@@ -110,6 +122,7 @@ export class FakeTarget implements EgressTarget {
             dynamicRecipient: false,
             supportsAttachments: true,
             maxAttachmentBytes: 1024 * 1024,
+            maxAttachments: 10,
             ...this.descriptor
         };
     }

@@ -95,7 +95,7 @@ export const EGRESS_NOTES: Record<EgressNoteCode, string> = {
     recipient_required:
         'Dieses Ziel erfordert eine gültige Empfängeradresse in prepare_action; sie fehlt oder ist ungültig.',
     recipient_not_allowed: 'Für dieses Ziel ist kein Empfänger angebbar; er ist lokal fest konfiguriert.',
-    attachment_too_large: 'Die Ressource überschreitet die Größenbegrenzung dieses Ziels.',
+    attachment_too_large: 'Die Anhänge überschreiten die Größenbegrenzung dieses Ziels.',
     awaiting_local_approval: 'Die Aktion ist vorbereitet und wartet auf die lokale Freigabe.',
     action_executing: 'Die Aktion wurde freigegeben und wird ausgeführt.',
     action_completed: 'Die Aktion wurde abgeschlossen.',
@@ -149,6 +149,8 @@ export interface PublicTarget {
     accepts_attachments: boolean;
     /** True when `prepare_action` for this target requires a `recipient`. */
     dynamic_recipient: boolean;
+    /** Maximum number of opaque references accepted by one action. */
+    max_attachments: number;
 }
 
 export interface PublicActionState {
@@ -365,7 +367,8 @@ export function publicTarget(descriptor: TargetDescriptor): PublicTarget {
         target: descriptor.id,
         purpose: descriptor.purpose,
         accepts_attachments: descriptor.supportsAttachments,
-        dynamic_recipient: descriptor.dynamicRecipient
+        dynamic_recipient: descriptor.dynamicRecipient,
+        max_attachments: descriptor.maxAttachments ?? 1
     };
 }
 

@@ -1,5 +1,5 @@
 import type { GatewayConfig } from '../config.js';
-import { Judge, type EgressEvidence } from '../judge/judge.js';
+import { Judge, type EgressAssessment, type EgressEvidence } from '../judge/judge.js';
 import { LocalModelResponseError, LocalModelUnavailableError } from '../judge/ollamaClient.js';
 import type { AuditLog } from '../store/auditLog.js';
 import { ActionStore } from '../store/actionStore.js';
@@ -26,10 +26,11 @@ import {
     type PublicTarget,
     type ResidualFinding
 } from './egress.js';
-import { TERMINAL_ACTION_STATUSES, targetIdOf } from './types.js';
+import { resourceBindingsOf, TERMINAL_ACTION_STATUSES, targetIdOf } from './types.js';
 import type {
     ActionPlan,
     ActionRecord,
+    ActionResourceBinding,
     InternalResource,
     JudgementRecord,
     LocalResourceSummary,
@@ -53,6 +54,9 @@ const MAX_SUBJECT_CHARS = 200;
 const MAX_BODY_CHARS = 10000;
 /** What the agent may say it is looking for in a summary. A hint, not a brief. */
 const MAX_FOCUS_CHARS = 300;
+/** Absolute schema ceiling; each target may configure a lower limit. */
+const MAX_ATTACHMENTS_PER_ACTION = 50;
+const RESOURCE_REFERENCE_PATTERN = /^res_[0-9a-f]{12}$/;
 
 /** How long `awaitActionDecision` waits by default, and at most. */
 const DEFAULT_DECISION_WAIT_SECONDS = 60;
@@ -66,7 +70,10 @@ export interface FindResourceInput {
 }
 
 export interface PrepareActionInput {
-    reference: string;
+    /** Backward-compatible single-reference form. Mutually exclusive with `references`. */
+    reference?: string;
+    /** Ordered complete attachment set. Mutually exclusive with `reference`. */
+    references?: string[];
     target: string;
     purpose: string;
     /**
@@ -120,6 +127,15 @@ export interface LocalActionViewBase {
     /** `webUrl` links into the source's own interface; local UI only. */
     resource: LocalResourceSummary & { ref: string; safeLabel: string; webUrl?: string };
     judgement: JudgementRecord;
+    /** Every resource covered by the approval, in attachment order. */
+    resources: Array<
+        LocalResourceSummary & {
+            ref: string;
+            safeLabel: string;
+            webUrl?: string;
+            judgement: JudgementRecord;
+        }
+    >;
 }
 
 /** A transfer of the original document to a configured target. */
@@ -238,12 +254,12 @@ export interface TargetLookup {
 export class Orchestrator {
     private readonly log: Logger;
     /**
-     * Original bytes fetched while preparing an action, held until the action
+     * Original files fetched while preparing an action, held until the action
      * reaches a terminal state. Keeping them means the approval view can show the
-     * exact size and digest of what would leave, and that approval does not race
+     * exact size and digest of the complete set, and that approval does not race
      * a second download.
      */
-    private readonly staged = new Map<string, SourceFile>();
+    private readonly staged = new Map<string, SourceFile[]>();
     /**
      * Callers of `awaitActionDecision`, keyed by action. Woken by the store's
      * transition hook, so a waiting Hermes learns about a decision the moment it
@@ -389,6 +405,7 @@ export class Orchestrator {
     async prepareAction(input: PrepareActionInput): Promise<PublicActionState> {
         const correlationId = newQueryId();
         const purpose = clamp(input.purpose, MAX_PURPOSE_CHARS);
+        const requestedReferences = normaliseRequestedReferences(input);
         const hermesNote = input.note ? clamp(input.note, MAX_HERMES_NOTE_CHARS) : undefined;
         // Subject through the single-line clamp: an outgoing mail header must not
         // be able to grow a second header from an embedded newline. The body keeps
@@ -399,11 +416,12 @@ export class Orchestrator {
         const recipientInput = input.recipient?.trim();
         await this.audit.record('hermes_request', {
             correlationId,
-            resourceRef: input.reference,
+            resourceRef: input.reference ?? input.references?.[0],
             targetId: input.target,
             detail: {
                 tool: 'prepare_action',
                 purpose,
+                resourceRefs: requestedReferences ?? [],
                 hasNote: Boolean(hermesNote),
                 agentSubject: agentSubject ?? null,
                 agentBodyChars: agentBody?.length ?? 0,
@@ -411,11 +429,28 @@ export class Orchestrator {
             }
         });
 
+        if (!requestedReferences || purpose.length === 0) {
+            return this.rejectRequest(correlationId, 'invalid_request', {
+                reason: 'invalid_resource_set'
+            });
+        }
+
         const target = this.targets.get(input.target);
         if (!target) {
             return this.rejectRequest(correlationId, 'target_unknown', { targetId: input.target });
         }
         const descriptor = target.describe();
+        const maxAttachments = descriptor.maxAttachments ?? 1;
+        if (
+            !descriptor.supportsAttachments ||
+            requestedReferences.length > maxAttachments
+        ) {
+            return this.rejectRequest(correlationId, 'invalid_request', {
+                reason: 'attachment_count_out_of_range',
+                requested: requestedReferences.length,
+                limit: maxAttachments
+            });
+        }
 
         if (descriptor.dynamicRecipient) {
             if (!recipientInput || !isValidRecipientFormat(recipientInput)) {
@@ -425,67 +460,97 @@ export class Orchestrator {
             return this.rejectRequest(correlationId, 'recipient_not_allowed', { targetId: input.target });
         }
 
-        const resolved = await this.resolveForEgress(correlationId, input.reference, purpose);
-        if ('refusal' in resolved) {
-            return resolved.refusal;
-        }
-        const { record, source, current, currentStateHash } = resolved;
-
-        // Fetch the original now so the approval view can state the exact size and
-        // digest of what would leave. This is a local read, not a transfer.
-        let file: SourceFile;
-        try {
-            file = await source.fetchOriginal(record.locator.nativeId);
-        } catch (error) {
-            await this.audit.record('source_unavailable', {
-                correlationId,
-                sourceId: source.id,
-                resourceRef: record.ref,
-                detail: { error: describeError(error), phase: 'fetch_original' }
-            });
-            return this.rejectRequest(correlationId, 'source_unavailable', { sourceId: source.id });
+        const resolvedSet = await this.resolveResourceSetForEgress(
+            correlationId,
+            requestedReferences,
+            purpose
+        );
+        if ('refusal' in resolvedSet) {
+            return resolvedSet.refusal;
         }
 
         const limit = descriptor.maxAttachmentBytes ?? Number.POSITIVE_INFINITY;
-        if (file.bytes.byteLength > limit) {
-            return this.rejectRequest(correlationId, 'attachment_too_large', {
-                bytes: file.bytes.byteLength,
-                limit
-            });
+        // Read originals sequentially after the set-wide metadata gate. This
+        // bounds peak work by the configured total instead of launching up to 50
+        // potentially large downloads before the limit can be applied.
+        const files: SourceFile[] = [];
+        let totalBytes = 0;
+        for (const { record, source } of resolvedSet.resources) {
+            let file: SourceFile;
+            try {
+                file = await source.fetchOriginal(record.locator.nativeId);
+            } catch (error) {
+                await this.audit.record('source_unavailable', {
+                    correlationId,
+                    sourceId: source.id,
+                    resourceRef: record.ref,
+                    detail: { error: describeError(error), phase: 'fetch_original_set' }
+                });
+                return this.rejectRequest(correlationId, 'source_unavailable', {
+                    sourceId: source.id
+                });
+            }
+            if (!isSafeAttachment(file)) {
+                await this.audit.record('invariant_blocked', {
+                    correlationId,
+                    resourceRef: record.ref,
+                    detail: { invariant: 'safe_attachment_set' }
+                });
+                return this.rejectRequest(correlationId, 'invalid_request', {
+                    reason: 'unsafe_attachment_set'
+                });
+            }
+            totalBytes += file.bytes.byteLength;
+            if (totalBytes > limit) {
+                return this.rejectRequest(correlationId, 'attachment_too_large', {
+                    bytes: totalBytes,
+                    limit
+                });
+            }
+            files.push(file);
         }
 
-        // Read the document itself before asking what it is. The bytes are
-        // already in hand at this point, but bytes are not something a language
-        // model can weigh — this is the text, and it is what turns the
-        // assessment below from a statement about a filename into one about a
-        // file.
-        const evidence = await this.readEvidence(source, record.locator.nativeId, current, correlationId);
-
-        let assessment;
-        try {
-            assessment = await this.judge.assessEgress(
-                current,
-                evidence,
-                purpose,
-                descriptor.label,
-                descriptor.purpose,
+        // Every member receives its own content-based assessment. One judgement
+        // about the first document must never be displayed as if it covered all
+        // attachments.
+        const assessments: EgressAssessment[] = [];
+        for (const resolved of resolvedSet.resources) {
+            const evidence = await this.readEvidence(
+                resolved.source,
+                resolved.record.locator.nativeId,
+                resolved.current,
                 correlationId
             );
-        } catch (error) {
-            const failure = this.localModelFailure(error);
-            await this.audit.record('hermes_response', {
-                correlationId,
-                detail: { tool: 'prepare_action', outcome: 'local_model_unavailable' }
-            });
-            return this.syntheticActionState('local_model_unavailable', failure.note);
+            try {
+                assessments.push(
+                    await this.judge.assessEgress(
+                        resolved.current,
+                        evidence,
+                        purpose,
+                        descriptor.label,
+                        descriptor.purpose,
+                        correlationId
+                    )
+                );
+            } catch (error) {
+                const failure = this.localModelFailure(error);
+                await this.audit.record('hermes_response', {
+                    correlationId,
+                    detail: { tool: 'prepare_action', outcome: 'local_model_unavailable' }
+                });
+                return this.syntheticActionState('local_model_unavailable', failure.note);
+            }
         }
 
-        const attachment: PlannedAttachment = {
+        const attachments: PlannedAttachment[] = files.map((file) => ({
             filename: file.filename,
             mimeType: file.mimeType,
             byteSize: file.bytes.byteLength,
             sha256: sha256Bytes(file.bytes)
-        };
+        }));
+        const safeLabels = resolvedSet.resources.map(
+            ({ record }, index) => assessments[index]?.safeLabel ?? record.safeLabel
+        );
         const plan: SendResourcePlan = {
             kind: 'send_resource',
             targetId: descriptor.id,
@@ -494,28 +559,43 @@ export class Orchestrator {
             recipientDisplay: descriptor.dynamicRecipient ? recipientInput! : descriptor.recipientDisplay,
             dynamicRecipient: descriptor.dynamicRecipient,
             recipientAddress: descriptor.dynamicRecipient ? recipientInput : undefined,
-            subject: agentSubject ?? buildSubject(record.safeLabel),
+            subject: agentSubject ?? buildSubject(describeResourceSet(safeLabels)),
             body:
                 agentBody ??
                 buildBody({
-                    safeLabel: assessment.safeLabel ?? record.safeLabel,
+                    safeLabel: describeResourceSet(safeLabels),
                     purpose,
                     hermesNote
                 }),
-            attachments: [attachment],
+            attachments,
             authoredByAgent: { subject: agentSubject !== undefined, body: agentBody !== undefined }
         };
 
         const now = new Date();
         const actionId = newActionId();
+        const resourceBindings: ActionResourceBinding[] = resolvedSet.resources.map(
+            ({ record, currentStateHash }, index) => ({
+                resourceRef: record.ref,
+                resourceStateHash: currentStateHash,
+                judgement: assessments[index]!.judgement
+            })
+        );
+        const firstBinding = resourceBindings[0]!;
         const action: ActionRecord = {
             actionId,
-            resourceRef: record.ref,
-            resourceStateHash: currentStateHash,
+            resourceRef: firstBinding.resourceRef,
+            resourceStateHash: firstBinding.resourceStateHash,
+            resourceBindings,
             purpose,
             plan,
-            bindingHash: computeBindingHash(record.ref, currentStateHash, plan),
-            judgement: assessment.judgement,
+            bindingHash: computeBindingHash(
+                resourceBindings.map(({ resourceRef, resourceStateHash }) => ({
+                    resourceRef,
+                    resourceStateHash
+                })),
+                plan
+            ),
+            judgement: firstBinding.judgement,
             status: 'awaiting_local_approval',
             statusReason: 'awaiting_user',
             createdAt: now.toISOString(),
@@ -523,7 +603,7 @@ export class Orchestrator {
         };
 
         await this.actions.create(action);
-        this.staged.set(actionId, file);
+        this.staged.set(actionId, files);
         this.log.info('Aktion vorbereitet, wartet auf lokale Freigabe', {
             actionId,
             targetId: descriptor.id
@@ -842,13 +922,29 @@ export class Orchestrator {
                 'Die angezeigte Aktion stimmt nicht mehr mit der gespeicherten Aktion überein. Bitte neu prüfen.'
             );
         }
+        const bindings = resourceBindingsOf(action);
+        if (!isConsistentStoredResourceSet(action, bindings)) {
+            await this.audit.record('invariant_blocked', {
+                actionId,
+                detail: { invariant: 'action_resource_set', phase: 'approve' }
+            });
+            await this.actions.transition(actionId, 'failed', { reason: 'delivery_failed' });
+            throw new ApprovalConflictError(
+                'Die Ressourcenmenge der Aktion ist inkonsistent gespeichert und wurde nicht ausgeführt.'
+            );
+        }
         // Guards against a tampered store: the hash must still follow from the
-        // fields it covers.
-        const recomputed = computeBindingHash(
-            action.resourceRef,
-            action.resourceStateHash,
-            action.plan
-        );
+        // fields it covers. A legacy record keeps its original single-resource
+        // hash formula so pending actions survive an upgrade.
+        const recomputed = action.resourceBindings
+            ? computeBindingHash(
+                  bindings.map(({ resourceRef, resourceStateHash }) => ({
+                      resourceRef,
+                      resourceStateHash
+                  })),
+                  action.plan
+              )
+            : computeBindingHash(action.resourceRef, action.resourceStateHash, action.plan);
         if (!safeEqual(recomputed, action.bindingHash)) {
             await this.audit.record('invariant_blocked', {
                 actionId,
@@ -864,7 +960,11 @@ export class Orchestrator {
             actionId,
             resourceRef: action.resourceRef,
             targetId: targetIdOf(action.plan),
-            detail: { bindingHash: action.bindingHash, purpose: action.purpose }
+            detail: {
+                bindingHash: action.bindingHash,
+                purpose: action.purpose,
+                resourceRefs: bindings.map((binding) => binding.resourceRef)
+            }
         });
         const executing = await this.actions.transition(actionId, 'executing', {
             decidedAt: new Date().toISOString()
@@ -972,6 +1072,11 @@ export class Orchestrator {
                 `Aktion ${actionId} steht nicht zur Entscheidung (Status: ${action.status}).`
             );
         }
+        if (resourceBindingsOf(action).length !== 1) {
+            throw new ApprovalConflictError(
+                'Eine einzelne Ressource kann in einer Mehrfachaktion nicht separat ersetzt werden. Bitte die Aktion verwerfen und neu vorbereiten.'
+            );
+        }
         const record = this.references.resolve(action.resourceRef);
         const query = record?.originQuery ?? record?.localSummary.title;
         if (!query) {
@@ -1044,6 +1149,142 @@ export class Orchestrator {
     // ------------------------------------------------------------------ internals
 
     /**
+     * Resolves and freshness-checks a complete resource set as one gate.
+     *
+     * The phases are intentionally set-wide: first every opaque reference and
+     * purpose binding, then every source, then all metadata reads. No original
+     * is downloaded until this entire method succeeds, and `allSettled` ensures
+     * a changed first member does not prevent the remaining members from being
+     * checked as part of the same decision.
+     */
+    private async resolveResourceSetForEgress(
+        correlationId: string,
+        references: string[],
+        purpose: string
+    ): Promise<
+        | { refusal: PublicActionState }
+        | {
+              resources: Array<{
+                  record: ResourceRecord;
+                  source: PrivateSource;
+                  current: InternalResource;
+                  currentStateHash: string;
+              }>;
+          }
+    > {
+        const records: ResourceRecord[] = [];
+        for (const reference of references) {
+            const record = this.references.resolve(reference);
+            if (!record) {
+                const known = this.references.all().some((entry) => entry.ref === reference);
+                return {
+                    refusal: await this.rejectRequest(
+                        correlationId,
+                        known ? 'reference_expired' : 'reference_unknown',
+                        { resourceRef: reference }
+                    )
+                };
+            }
+            records.push(record);
+        }
+
+        for (const record of records) {
+            if (!this.references.resolveForPurpose(record.ref, purpose)) {
+                return {
+                    refusal: await this.rejectRequest(correlationId, 'purpose_mismatch', {
+                        resourceRef: record.ref,
+                        mintedFor: record.purpose,
+                        requestedFor: purpose
+                    })
+                };
+            }
+        }
+
+        const sourced: Array<{ record: ResourceRecord; source: PrivateSource }> = [];
+        for (const record of records) {
+            const source = this.sources.get(record.locator.sourceId);
+            if (!source || !source.isAvailable()) {
+                return {
+                    refusal: await this.rejectRequest(correlationId, 'source_unavailable', {
+                        sourceId: record.locator.sourceId
+                    })
+                };
+            }
+            sourced.push({ record, source });
+        }
+
+        const metadata = await Promise.allSettled(
+            sourced.map(({ record, source }) => source.fetchMetadata(record.locator.nativeId))
+        );
+        let unavailable = false;
+        for (const [index, result] of metadata.entries()) {
+            if (result.status === 'rejected') {
+                unavailable = true;
+                const entry = sourced[index]!;
+                await this.audit.record('source_unavailable', {
+                    correlationId,
+                    sourceId: entry.source.id,
+                    resourceRef: entry.record.ref,
+                    detail: { error: describeError(result.reason), phase: 'fetch_metadata_set' }
+                });
+            }
+        }
+        if (unavailable) {
+            return {
+                refusal: await this.rejectRequest(correlationId, 'source_unavailable', {
+                    reason: 'metadata_set_unavailable'
+                })
+            };
+        }
+
+        const missing = metadata.findIndex(
+            (result) => result.status === 'fulfilled' && result.value === undefined
+        );
+        if (missing >= 0) {
+            return {
+                refusal: await this.rejectRequest(correlationId, 'reference_unknown', {
+                    resourceRef: records[missing]!.ref,
+                    reason: 'resource_gone'
+                })
+            };
+        }
+
+        const resources = metadata.map((result, index) => {
+            const current = (result as PromiseFulfilledResult<InternalResource>).value;
+            const entry = sourced[index]!;
+            return {
+                ...entry,
+                current,
+                currentStateHash: resourceStateHash(current)
+            };
+        });
+        let changed = false;
+        for (const resolved of resources) {
+            if (!safeEqual(resolved.currentStateHash, resolved.record.stateHash)) {
+                changed = true;
+                await this.audit.record('action_binding_mismatch', {
+                    correlationId,
+                    resourceRef: resolved.record.ref,
+                    detail: {
+                        expected: resolved.record.stateHash,
+                        actual: resolved.currentStateHash,
+                        phase: 'prepare_set'
+                    }
+                });
+            }
+        }
+        if (changed) {
+            return {
+                refusal: await this.rejectRequest(correlationId, 'resource_changed', {
+                    reason: 'resource_set_changed'
+                })
+            };
+        }
+
+        return { resources };
+    }
+
+    /**
      * The checks every action has to pass before anything is built from a
      * reference: that it exists, that it was minted for this purpose, that its
      * source is reachable, and that the resource is still in the state the
@@ -1068,75 +1309,15 @@ export class Orchestrator {
               currentStateHash: string;
           }
     > {
-        const record = this.references.resolve(reference);
-        if (!record) {
-            const known = this.references.all().some((entry) => entry.ref === reference);
-            return {
-                refusal: await this.rejectRequest(
-                    correlationId,
-                    known ? 'reference_expired' : 'reference_unknown',
-                    { resourceRef: reference }
-                )
-            };
+        const resolved = await this.resolveResourceSetForEgress(
+            correlationId,
+            [reference],
+            purpose
+        );
+        if ('refusal' in resolved) {
+            return resolved;
         }
-        if (!this.references.resolveForPurpose(reference, purpose)) {
-            return {
-                refusal: await this.rejectRequest(correlationId, 'purpose_mismatch', {
-                    resourceRef: reference,
-                    mintedFor: record.purpose,
-                    requestedFor: purpose
-                })
-            };
-        }
-
-        const source = this.sources.get(record.locator.sourceId);
-        if (!source || !source.isAvailable()) {
-            return {
-                refusal: await this.rejectRequest(correlationId, 'source_unavailable', {
-                    sourceId: record.locator.sourceId
-                })
-            };
-        }
-
-        let current: InternalResource | undefined;
-        try {
-            current = await source.fetchMetadata(record.locator.nativeId);
-        } catch (error) {
-            await this.audit.record('source_unavailable', {
-                correlationId,
-                sourceId: source.id,
-                detail: { error: describeError(error) }
-            });
-            return {
-                refusal: await this.rejectRequest(correlationId, 'source_unavailable', {
-                    sourceId: source.id
-                })
-            };
-        }
-        if (!current) {
-            return {
-                refusal: await this.rejectRequest(correlationId, 'reference_unknown', {
-                    resourceRef: reference,
-                    reason: 'resource_gone'
-                })
-            };
-        }
-
-        const currentStateHash = resourceStateHash(current);
-        if (!safeEqual(currentStateHash, record.stateHash)) {
-            await this.audit.record('action_binding_mismatch', {
-                correlationId,
-                resourceRef: record.ref,
-                detail: { expected: record.stateHash, actual: currentStateHash, phase: 'prepare' }
-            });
-            return {
-                refusal: await this.rejectRequest(correlationId, 'resource_changed', {
-                    resourceRef: record.ref
-                })
-            };
-        }
-
-        return { record, source, current, currentStateHash };
+        return resolved.resources[0]!;
     }
 
     /**
@@ -1281,7 +1462,11 @@ export class Orchestrator {
         try {
             attachments = await this.materialiseAttachments(action, plan);
         } catch (error) {
-            await this.fail(action.actionId, 'source_unavailable', describeError(error));
+            await this.fail(
+                action.actionId,
+                error instanceof ResourceSetChangedError ? 'resource_changed' : 'source_unavailable',
+                describeError(error)
+            );
             return;
         }
 
@@ -1306,6 +1491,12 @@ export class Orchestrator {
                     subject: plan.subject,
                     bodySha256: sha256Text(plan.body),
                     bodyChars: plan.body.length,
+                    resourceBindings: resourceBindingsOf(action).map(
+                        ({ resourceRef, resourceStateHash }) => ({
+                            resourceRef,
+                            resourceStateHash
+                        })
+                    ),
                     attachments: plan.attachments,
                     deliveryReference: receipt.reference,
                     bindingHash: action.bindingHash
@@ -1324,44 +1515,137 @@ export class Orchestrator {
      * Produces the bytes to send.
      *
      * Normally they are the ones staged at prepare time. After a restart the
-     * staging map is empty, so the file is re-read and its digest compared against
-     * the approved plan: if the document changed in the meantime the digests
-     * differ and the transfer is abandoned rather than sending content the user
-     * never approved.
+     * staging map is empty, so every file is re-read and compared against the
+     * approved ordered plan. Any difference abandons the whole transfer rather
+     * than sending content the user never approved.
      */
     private async materialiseAttachments(
         action: ActionRecord,
         plan: SendResourcePlan
     ): Promise<EgressAttachment[]> {
         const planned = plan.attachments;
-        const staged = this.staged.get(action.actionId);
-        if (staged) {
-            const digest = sha256Bytes(staged.bytes);
-            const expected = planned[0]?.sha256;
-            if (!expected || !safeEqual(digest, expected)) {
-                throw new Error('Die bereitgestellten Daten weichen von der freigegebenen Aktion ab.');
-            }
-            return [{ filename: planned[0]!.filename, mimeType: planned[0]!.mimeType, bytes: staged.bytes }];
-        }
-
-        const record = this.references.resolve(action.resourceRef) ?? undefined;
-        const locator = record?.locator;
-        if (!locator) {
-            throw new Error('Die Referenz der Aktion ist abgelaufen; erneute Vorbereitung nötig.');
-        }
-        const source = this.sources.get(locator.sourceId);
-        if (!source || !source.isAvailable()) {
-            throw new Error(`Quelle ${locator.sourceId} ist nicht verfügbar.`);
-        }
-        const file = await source.fetchOriginal(locator.nativeId);
-        const digest = sha256Bytes(file.bytes);
-        const expected = planned[0]?.sha256;
-        if (!expected || !safeEqual(digest, expected)) {
-            throw new Error(
-                'Die Ressource hat sich seit der Freigabe geändert. Die Aktion wird nicht ausgeführt.'
+        const resolved = await this.revalidateResourceSetForExecution(action);
+        if (planned.length !== resolved.length) {
+            throw new ResourceSetChangedError(
+                'Die Zahl der gespeicherten Ressourcen stimmt nicht mit der freigegebenen Anhangsmenge überein.'
             );
         }
-        return [{ filename: planned[0]!.filename, mimeType: planned[0]!.mimeType, bytes: file.bytes }];
+
+        const staged = this.staged.get(action.actionId);
+        if (staged) {
+            if (staged.length !== planned.length) {
+                throw new ResourceSetChangedError(
+                    'Die bereitgestellte Ressourcenmenge weicht von der freigegebenen Aktion ab.'
+                );
+            }
+            return staged.map((file, index) => {
+                const expected = planned[index]!;
+                if (
+                    file.bytes.byteLength !== expected.byteSize ||
+                    !safeEqual(sha256Bytes(file.bytes), expected.sha256)
+                ) {
+                    throw new ResourceSetChangedError(
+                        'Die bereitgestellten Daten weichen von der freigegebenen Aktion ab.'
+                    );
+                }
+                return {
+                    filename: expected.filename,
+                    mimeType: expected.mimeType,
+                    bytes: file.bytes
+                };
+            });
+        }
+
+        const attachments: EgressAttachment[] = [];
+        for (const [index, { record, source }] of resolved.entries()) {
+            let file: SourceFile;
+            try {
+                file = await source.fetchOriginal(record.locator.nativeId);
+            } catch {
+                throw new Error('Mindestens eine Ressource konnte nicht erneut geladen werden.');
+            }
+            if (!isSafeAttachment(file)) {
+                throw new ResourceSetChangedError(
+                    'Die erneut geladene Ressourcenmenge enthält unsichere Anhangsmetadaten.'
+                );
+            }
+            const expected = planned[index]!;
+            if (
+                file.filename !== expected.filename ||
+                file.mimeType !== expected.mimeType ||
+                file.bytes.byteLength !== expected.byteSize ||
+                !safeEqual(sha256Bytes(file.bytes), expected.sha256)
+            ) {
+                throw new ResourceSetChangedError(
+                    'Die Ressourcenmenge hat sich seit der Freigabe geändert.'
+                );
+            }
+            attachments.push({
+                filename: expected.filename,
+                mimeType: expected.mimeType,
+                bytes: file.bytes
+            });
+        }
+        return attachments;
+    }
+
+    /**
+     * Re-reads metadata for every approved member immediately before any target
+     * is called. All reads settle before one combined verdict is made, so a
+     * failure or change can only block the whole set, never produce a partial
+     * payload.
+     */
+    private async revalidateResourceSetForExecution(
+        action: ActionRecord
+    ): Promise<Array<{ binding: ActionResourceBinding; record: ResourceRecord; source: PrivateSource }>> {
+        const bindings = resourceBindingsOf(action);
+        if (!isConsistentStoredResourceSet(action, bindings)) {
+            throw new ResourceSetChangedError('Die gespeicherte Ressourcenmenge ist inkonsistent.');
+        }
+
+        const resolved: Array<{
+            binding: ActionResourceBinding;
+            record: ResourceRecord;
+            source: PrivateSource;
+        }> = [];
+        for (const binding of bindings) {
+            const record = this.references.resolve(binding.resourceRef);
+            if (!record || !this.references.resolveForPurpose(binding.resourceRef, action.purpose)) {
+                throw new ResourceSetChangedError(
+                    'Mindestens eine Referenz ist abgelaufen oder nicht mehr zweckgebunden.'
+                );
+            }
+            const source = this.sources.get(record.locator.sourceId);
+            if (!source || !source.isAvailable()) {
+                throw new Error('Mindestens eine Quelle ist nicht verfügbar.');
+            }
+            resolved.push({ binding, record, source });
+        }
+
+        const metadata = await Promise.allSettled(
+            resolved.map(({ record, source }) => source.fetchMetadata(record.locator.nativeId))
+        );
+        if (metadata.some((result) => result.status === 'rejected')) {
+            throw new Error('Mindestens eine Ressource konnte nicht erneut geprüft werden.');
+        }
+
+        let changed = false;
+        for (const [index, result] of metadata.entries()) {
+            const current = (result as PromiseFulfilledResult<InternalResource | undefined>).value;
+            const binding = resolved[index]!.binding;
+            if (
+                !current ||
+                !safeEqual(resourceStateHash(current), binding.resourceStateHash)
+            ) {
+                changed = true;
+            }
+        }
+        if (changed) {
+            throw new ResourceSetChangedError(
+                'Mindestens eine Ressource hat sich seit der Freigabe geändert.'
+            );
+        }
+        return resolved;
     }
 
     private async fail(
@@ -1632,15 +1916,39 @@ export class Orchestrator {
     }
 
     private toLocalActionView(action: ActionRecord): LocalActionView {
-        const record = this.references.resolve(action.resourceRef);
-        const summary: LocalResourceSummary =
-            record?.localSummary ??
-            ({
-                title: '(Referenz abgelaufen)',
-                sourceId: 'unbekannt',
-                sourceLabel: 'unbekannt',
-                nativeIdDisplay: '-'
-            } satisfies LocalResourceSummary);
+        const bindings = resourceBindingsOf(action);
+        const effectiveBindings =
+            bindings.length > 0
+                ? bindings
+                : [
+                      {
+                          resourceRef: action.resourceRef,
+                          resourceStateHash: action.resourceStateHash,
+                          judgement: action.judgement
+                      }
+                  ];
+        const resources = effectiveBindings.map((binding) => {
+            const record = this.references.resolve(binding.resourceRef);
+            const summary: LocalResourceSummary =
+                record?.localSummary ??
+                ({
+                    title: '(Referenz abgelaufen)',
+                    sourceId: 'unbekannt',
+                    sourceLabel: 'unbekannt',
+                    nativeIdDisplay: '-'
+                } satisfies LocalResourceSummary);
+            return {
+                ...summary,
+                ref: binding.resourceRef,
+                safeLabel: record?.safeLabel ?? '(unbekannt)',
+                webUrl: record
+                    ? this.webUrlFor(record.locator.sourceId, record.locator.nativeId)
+                    : undefined,
+                judgement: binding.judgement
+            };
+        });
+        const first = resources[0]!;
+        const { judgement, ...resource } = first;
 
         const base: LocalActionViewBase = {
             actionId: action.actionId,
@@ -1649,16 +1957,9 @@ export class Orchestrator {
             purpose: action.purpose,
             createdAt: action.createdAt,
             expiresAt: action.expiresAt,
-            resource: {
-                ...summary,
-                ref: action.resourceRef,
-                safeLabel: record?.safeLabel ?? '(unbekannt)',
-                // Resolved at view time rather than stored with the reference, so
-                // configuring the source's web address later lights up the links
-                // on actions that already exist.
-                webUrl: record ? this.webUrlFor(record.locator.sourceId, record.locator.nativeId) : undefined
-            },
-            judgement: action.judgement
+            resource,
+            judgement,
+            resources
         };
 
         if (action.plan.kind === 'summarize_resource') {
@@ -1760,6 +2061,101 @@ const SYNTHETIC_REASONS: Partial<Record<Parameters<typeof note>[0], ActionRecord
     target_unknown: 'target_unavailable'
 };
 
+class ResourceSetChangedError extends Error {}
+
+/** Validates the mutually exclusive legacy/new public forms without echoing input. */
+function normaliseRequestedReferences(input: PrepareActionInput): string[] | undefined {
+    const hasLegacy = input.reference !== undefined;
+    const hasSet = input.references !== undefined;
+    if (hasLegacy === hasSet) {
+        return undefined;
+    }
+    const references = hasLegacy ? [input.reference!] : input.references!;
+    if (
+        references.length === 0 ||
+        references.length > MAX_ATTACHMENTS_PER_ACTION ||
+        references.some(
+            (reference) =>
+                typeof reference !== 'string' || !RESOURCE_REFERENCE_PATTERN.test(reference)
+        )
+    ) {
+        return undefined;
+    }
+    if (new Set(references).size !== references.length) {
+        return undefined;
+    }
+    return [...references];
+}
+
+/**
+ * Filenames and media types are sent as message metadata and rendered in the
+ * approval page. Reject invisible controls and path-shaped names rather than
+ * trying to display a sanitised value that differs from what the source gave.
+ */
+function isSafeAttachment(file: SourceFile): boolean {
+    if (
+        !file ||
+        typeof file.filename !== 'string' ||
+        typeof file.mimeType !== 'string' ||
+        !(file.bytes instanceof Uint8Array)
+    ) {
+        return false;
+    }
+    const filename = file.filename.normalize('NFC');
+    const mimeType = file.mimeType.trim();
+    return !(
+        filename.length === 0 ||
+        filename.length > 255 ||
+        filename !== file.filename ||
+        filename.trim() !== filename ||
+        filename === '.' ||
+        filename === '..' ||
+        /[/\\]/.test(filename) ||
+        /[^\P{C}]/u.test(filename) ||
+        mimeType.length === 0 ||
+        mimeType.length > 200 ||
+        /[^\P{C}]/u.test(mimeType) ||
+        !/^[^\s/;]+\/[^\s/;]+(?:\s*;\s*[^\r\n]+)?$/.test(mimeType)
+    );
+}
+
+function describeResourceSet(safeLabels: string[]): string {
+    if (safeLabels.length === 1) {
+        return safeLabels[0]!;
+    }
+    return `${safeLabels[0]!} und ${safeLabels.length - 1} weitere${
+        safeLabels.length === 2 ? ' Ressource' : ' Ressourcen'
+    }`;
+}
+
+/** Structural checks for redundant legacy aliases and attachment/resource order. */
+function isConsistentStoredResourceSet(
+    action: ActionRecord,
+    bindings: ActionResourceBinding[]
+): boolean {
+    if (
+        bindings.length === 0 ||
+        bindings.length > MAX_ATTACHMENTS_PER_ACTION ||
+        new Set(bindings.map((binding) => binding.resourceRef)).size !== bindings.length
+    ) {
+        return false;
+    }
+    const first = bindings[0]!;
+    if (
+        first.resourceRef !== action.resourceRef ||
+        first.resourceStateHash !== action.resourceStateHash
+    ) {
+        return false;
+    }
+    if (
+        action.plan.kind === 'send_resource' &&
+        action.plan.attachments.length !== bindings.length
+    ) {
+        return false;
+    }
+    return action.plan.kind !== 'summarize_resource' || bindings.length === 1;
+}
+
 /**
  * Identity of a resource *in a particular state*. Covering the state token means
  * an edited document yields a different hash, which invalidates references and
@@ -1796,10 +2192,28 @@ export function computeBindingHash(
     resourceRef: string,
     resourceStateHashValue: string,
     plan: ActionPlan
+): string;
+export function computeBindingHash(
+    resources: Array<{ resourceRef: string; resourceStateHash: string }>,
+    plan: ActionPlan
+): string;
+export function computeBindingHash(
+    resourceOrSet: string | Array<{ resourceRef: string; resourceStateHash: string }>,
+    stateOrPlan: string | ActionPlan,
+    legacyPlan?: ActionPlan
 ): string {
+    if (typeof resourceOrSet !== 'string') {
+        const plan = stateOrPlan as ActionPlan;
+        return stableHash({
+            resources: resourceOrSet,
+            targetId: bindingDestination(plan),
+            plan
+        });
+    }
+    const plan = legacyPlan!;
     return stableHash({
-        resourceRef,
-        resourceStateHash: resourceStateHashValue,
+        resourceRef: resourceOrSet,
+        resourceStateHash: stateOrPlan as string,
         targetId: bindingDestination(plan),
         plan
     });

@@ -160,6 +160,11 @@ export interface ApiActionViewBase {
     expiresAt: string;
     resource: ApiResourceSummary;
     judgement: ApiJudgement;
+    /**
+     * Every resource covered by the approval, in attachment order. `resource`
+     * and `judgement` above remain the first member for local API compatibility.
+     */
+    resources: Array<ApiResourceSummary & { judgement: ApiJudgement }>;
 }
 
 /** A document on its way to a configured target. */
@@ -268,6 +273,7 @@ export interface ApiSelectionView {
 export interface ApiHistoryEntry {
     actionId: string;
     resourceRef: string;
+    resourceRefs: string[];
     purpose: string;
     status: ApiActionStatus;
     statusReason?: ApiActionStatusReason;

@@ -53,6 +53,7 @@
       },
       "from": "gateway@example.org",
       "to": "ich@example.org",
+      "maxAttachments": 10,
       "maxAttachmentBytes": 20971520
     },
     {
@@ -70,6 +71,7 @@
       },
       "from": "gateway@example.org",
       "allowDynamicRecipient": true,
+      "maxAttachments": 10,
       "maxAttachmentBytes": 20971520
     },
     {
@@ -80,6 +82,7 @@
       "purpose": "Versand in den eigenen privaten Telegram-Chat.",
       "botToken": "${TELEGRAM_BOT_TOKEN}",
       "chatId": "${TELEGRAM_CHAT_ID}",
+      "maxAttachments": 10,
       "maxAttachmentBytes": 52428800
     }
   ],
