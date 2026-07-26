@@ -60,7 +60,22 @@ export interface ApproveDialogData {
                 </dd>
 
                 <dt>Betreff</dt>
-                <dd>{{ action.egress.subject || '– kein Betreff –' }}</dd>
+                <dd>
+                    {{ action.egress.subject || '– kein Betreff –' }}
+                    @if (action.egress.authoredByAgent.subject) {
+                        <span class="by-agent">vom Agenten</span>
+                    }
+                </dd>
+
+                @if (action.egress.authoredByAgent.body) {
+                    <dt>Nachrichtentext</dt>
+                    <dd>
+                        <span class="by-agent">vom Agenten</span>
+                        <span class="agent-hint">
+                            geht wörtlich hinaus, ohne Zusatz des Gateways
+                        </span>
+                    </dd>
+                }
 
                 <dt>Anhänge</dt>
                 <dd>
@@ -153,6 +168,22 @@ export interface ApproveDialogData {
         .facts dd {
             margin: 0;
             overflow-wrap: anywhere;
+        }
+
+        .by-agent {
+            display: inline-block;
+            padding: 0.05rem 0.4rem;
+            border-radius: 999px;
+            background: var(--ltg-caution-surface);
+            color: var(--ltg-caution);
+            font-size: 0.68rem;
+            font-weight: 700;
+        }
+
+        .agent-hint {
+            margin-left: 0.4rem;
+            font-size: 0.8rem;
+            color: var(--mat-sys-on-surface-variant);
         }
 
         .file {

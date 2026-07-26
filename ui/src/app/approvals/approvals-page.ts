@@ -282,8 +282,10 @@ export class ApprovalsPage {
                     this.notify.ok('Aktion verworfen. Hermes muss sie neu vorbereiten.');
                     break;
                 case 'reselect': {
-                    const result = await this.api.reselect(action.actionId);
-                    this.notify.ok(`Auswahl ${result.selection_id} geöffnet.`);
+                    await this.api.reselect(action.actionId);
+                    this.notify.ok(
+                        'Auswahl geöffnet. Die Freigabe pausiert so lange und ist nicht abgelehnt.'
+                    );
                     await this.router.navigate(['/app/selections']);
                     break;
                 }

@@ -87,6 +87,12 @@ export interface ApiResourceSummary {
     modifiedAt?: string;
     attributes?: ApiAttributes;
     excerpt?: string;
+    /**
+     * Link into the source's own web interface, when one is configured. Local
+     * only — this is the one location-shaped string in the whole payload, and it
+     * exists so the user can look at the actual document before deciding.
+     */
+    webUrl?: string;
 }
 
 export interface ApiTargetSummary {
@@ -107,6 +113,13 @@ export interface ApiEgressPlan {
     body: string;
     attachments: ApiAttachment[];
     totalBytes: number;
+    /**
+     * Which parts the cloud agent wrote verbatim rather than the gateway. The UI
+     * marks those, because "a machine notice the gateway composed" and "prose an
+     * agent wrote that will go out unchanged" are two very different things to
+     * be releasing, and they look identical otherwise.
+     */
+    authoredByAgent: { subject: boolean; body: boolean };
 }
 
 export interface ApiActionView {
@@ -139,6 +152,13 @@ export interface ApiSelectionCandidate {
     mimeType?: string;
     attributes?: ApiAttributes;
     excerpt?: string;
+    /** Link into the source's own web interface, when one is configured. */
+    webUrl?: string;
+    /**
+     * True when a parked action already points at this candidate. Choosing it
+     * confirms that action rather than replacing it.
+     */
+    isCurrent?: boolean;
 }
 
 export interface ApiSelectionView {
@@ -149,6 +169,13 @@ export interface ApiSelectionView {
     reasoning: string;
     createdAt: string;
     expiresAt: string;
+    /**
+     * The action parked on this selection, if the user opened it from an
+     * approval. That action is on hold, not decided: confirming its current
+     * resource brings it back, picking another discards it, cancelling restores
+     * it unchanged.
+     */
+    originActionId?: string;
     candidates: ApiSelectionCandidate[];
 }
 
@@ -201,6 +228,8 @@ export type ApiAuditEventType =
     | 'action_approved'
     | 'action_rejected'
     | 'action_discarded'
+    | 'action_parked'
+    | 'action_restored'
     | 'action_binding_mismatch'
     | 'egress_performed'
     | 'egress_failed'
@@ -238,12 +267,27 @@ export interface ApiOkResponse {
     ok: true;
 }
 
+/**
+ * What a selection did to the action it was opened from. `none` covers both "no
+ * action was parked on it" and "the parked action is gone", so the client never
+ * has to distinguish those to phrase a message.
+ */
+export type ApiParkedActionOutcome =
+    | { kind: 'none' }
+    | { kind: 'restored'; actionId: string }
+    | { kind: 'discarded'; actionId: string };
+
 export interface ApiReselectResponse extends ApiOkResponse {
     selection_id: string;
 }
 
 export interface ApiSelectResponse extends ApiOkResponse {
     reference: string;
+    action: ApiParkedActionOutcome;
+}
+
+export interface ApiCancelSelectionResponse extends ApiOkResponse {
+    action: ApiParkedActionOutcome;
 }
 
 /** Every non-2xx response from `/api/*` carries this shape. */

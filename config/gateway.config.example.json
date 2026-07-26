@@ -22,6 +22,7 @@
         "get": "get_document",
         "download": "download_document"
       },
+      "webBaseUrl": "${PAPERLESS_URL}",
       "maxCandidates": 8,
       "excerptChars": 2500
     }

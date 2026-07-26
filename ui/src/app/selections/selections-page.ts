@@ -1,6 +1,11 @@
 import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
-import type { ApiSelectionCandidate, ApiSelectionView } from '@gateway/contract';
+import { Router } from '@angular/router';
+import type {
+    ApiParkedActionOutcome,
+    ApiSelectionCandidate,
+    ApiSelectionView
+} from '@gateway/contract';
 import { GatewayApi, describeApiError } from '../core/gateway-api';
 import { GatewayState } from '../core/gateway-state';
 import { Notify } from '../core/notify';
@@ -41,6 +46,20 @@ import { Icon } from '../shared/icon';
                     </header>
 
                     <div class="body">
+                        @if (selection.originActionId) {
+                            <p class="parked">
+                                <ltg-icon name="alert" [size]="16" />
+                                <span>
+                                    Die Freigabe {{ selection.originActionId }} pausiert, solange
+                                    diese Auswahl offen ist — sie ist weder abgelehnt noch verworfen.
+                                    Bestätigst du das bereits gewählte Dokument, wartet sie
+                                    unverändert weiter auf deine Entscheidung. Wählst du ein anderes,
+                                    wird sie verworfen und Hermes muss sie neu vorbereiten.
+                                    „Auswahl abbrechen“ lässt sie ebenfalls unverändert.
+                                </span>
+                            </p>
+                        }
+
                         <ltg-fields>
                             <ltg-field label="Suchanfrage">{{ selection.query }}</ltg-field>
                             <ltg-field label="Zweck">{{ selection.purpose }}</ltg-field>
@@ -54,16 +73,25 @@ import { Icon } from '../shared/icon';
 
                         <ul class="candidates">
                             @for (candidate of selection.candidates; track candidate.candidateId) {
-                                <li>
+                                <li [class.current]="candidate.isCurrent">
                                     <div class="cand-head">
-                                        <strong>{{ candidate.title }}</strong>
+                                        <strong>
+                                            {{ candidate.title }}
+                                            @if (candidate.isCurrent) {
+                                                <span class="badge">bereits gewählt</span>
+                                            }
+                                        </strong>
                                         <button
                                             matButton="filled"
                                             type="button"
                                             [disabled]="busy()"
                                             (click)="choose(selection, candidate)"
                                         >
-                                            Diese wählen
+                                            @if (candidate.isCurrent) {
+                                                Diese bestätigen
+                                            } @else {
+                                                Diese wählen
+                                            }
                                         </button>
                                     </div>
                                     <ltg-fields>
@@ -72,6 +100,17 @@ import { Icon } from '../shared/icon';
                                             <span class="ltg-mono ltg-muted">
                                                 (Kennung {{ candidate.nativeId }})
                                             </span>
+                                            @if (candidate.webUrl; as href) {
+                                                <a
+                                                    class="open-source"
+                                                    [href]="href"
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                >
+                                                    Dokument öffnen
+                                                    <ltg-icon name="chevron" [size]="14" />
+                                                </a>
+                                            }
                                         </ltg-field>
                                         @if (candidate.modifiedAt) {
                                             <ltg-field label="Geändert">
@@ -169,6 +208,55 @@ import { Icon } from '../shared/icon';
             background: var(--mat-sys-surface-container);
         }
 
+        /*
+         * The candidate an action already points at is marked, because
+         * confirming it and replacing it have opposite consequences for that
+         * action — and two documents in a Paperless archive routinely differ by
+         * nothing a list row shows.
+         */
+        .candidates li.current {
+            border-color: var(--mat-sys-primary);
+        }
+
+        .badge {
+            display: inline-block;
+            margin-left: 0.45rem;
+            padding: 0.05rem 0.45rem;
+            border-radius: 999px;
+            background: var(--mat-sys-surface-container-highest);
+            color: var(--mat-sys-primary);
+            font-size: 0.68rem;
+            font-weight: 700;
+        }
+
+        .parked {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.55rem;
+            margin: 0 0 var(--ltg-gap);
+            padding: 0.75rem 0.9rem;
+            border: 1px solid var(--ltg-caution);
+            border-radius: var(--ltg-radius-sm);
+            background: var(--ltg-caution-surface);
+            color: var(--ltg-caution);
+            font-size: 0.85rem;
+            line-height: 1.5;
+        }
+
+        .open-source {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.15rem;
+            margin-left: 0.5rem;
+            color: var(--mat-sys-primary);
+            font-size: 0.82rem;
+            text-decoration: none;
+        }
+
+        .open-source:hover {
+            text-decoration: underline;
+        }
+
         .cand-head {
             display: flex;
             justify-content: space-between;
@@ -214,6 +302,7 @@ export class SelectionsPage {
     private readonly state = inject(GatewayState);
     private readonly api = inject(GatewayApi);
     private readonly notify = inject(Notify);
+    private readonly router = inject(Router);
 
     protected readonly selections = this.state.selections;
     protected readonly busy = signal(false);
@@ -231,16 +320,41 @@ export class SelectionsPage {
         candidate: ApiSelectionCandidate
     ): Promise<void> {
         await this.run(async () => {
-            await this.api.select(selection.selectionId, candidate.candidateId);
-            this.notify.ok('Ressource ausgewählt. Hermes kann die Aktion nun vorbereiten.');
+            const result = await this.api.select(selection.selectionId, candidate.candidateId);
+            this.notify.ok(this.describeOutcome(result.action));
+            if (result.action.kind === 'restored') {
+                await this.router.navigate(['/app/approvals'], {
+                    queryParams: { action: result.action.actionId }
+                });
+            }
         });
     }
 
     protected async cancel(selection: ApiSelectionView): Promise<void> {
         await this.run(async () => {
-            await this.api.cancelSelection(selection.selectionId);
-            this.notify.ok('Auswahl abgebrochen.');
+            const result = await this.api.cancelSelection(selection.selectionId);
+            this.notify.ok(
+                result.action.kind === 'restored'
+                    ? 'Auswahl abgebrochen. Die pausierte Freigabe wartet unverändert weiter.'
+                    : 'Auswahl abgebrochen.'
+            );
         });
+    }
+
+    /**
+     * The message has to say what happened to the parked action, because that is
+     * the part the user cannot see: the selection disappearing looks the same
+     * whether their approval survived it or not.
+     */
+    private describeOutcome(outcome: ApiParkedActionOutcome): string {
+        switch (outcome.kind) {
+            case 'restored':
+                return 'Dokument bestätigt. Die Freigabe wartet unverändert weiter auf deine Entscheidung.';
+            case 'discarded':
+                return 'Anderes Dokument gewählt. Die bisherige Freigabe wurde verworfen; Hermes muss sie neu vorbereiten.';
+            case 'none':
+                return 'Ressource ausgewählt. Hermes kann die Aktion nun vorbereiten.';
+        }
     }
 
     private async run(operation: () => Promise<void>): Promise<void> {

@@ -142,6 +142,10 @@ function registerSecrets(guard: EgressGuard, config: GatewayConfig): void {
     guard.registerSecret(config.localModel.bearerToken);
     guard.registerSecret(config.approval.uiToken);
     for (const source of config.sources) {
+        // The source's web address exists only for links in the local UI. It is
+        // registered here so that a payload towards Hermes carrying it fails the
+        // guard by name, not merely by looking URL-shaped.
+        guard.registerSecret(source.webBaseUrl);
         if (source.transport.kind === 'http') {
             guard.registerSecret(source.transport.bearerToken);
             guard.registerSecret(source.transport.url);

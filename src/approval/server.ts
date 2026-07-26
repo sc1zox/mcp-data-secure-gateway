@@ -12,6 +12,7 @@ import { createLogger, describeError, type Logger } from '../util/log.js';
 import {
     API_TAB_ROUTES,
     type ApiAuditResponse,
+    type ApiCancelSelectionResponse,
     type ApiHistoryEntry,
     type ApiOkResponse,
     type ApiReselectResponse,
@@ -195,8 +196,8 @@ export class ApprovalServer {
                 return;
             }
             try {
-                await this.orchestrator.cancelSelection(selectionId);
-                sendJson(res, 200, { ok: true } satisfies ApiOkResponse);
+                const outcome = await this.orchestrator.cancelSelection(selectionId);
+                sendJson(res, 200, { ok: true, action: outcome } satisfies ApiCancelSelectionResponse);
             } catch (error) {
                 sendJson(res, 409, { error: describeError(error) });
             }
@@ -278,7 +279,11 @@ export class ApprovalServer {
         }
         try {
             const result = await this.orchestrator.resolveSelection(selectionId, candidateId);
-            sendJson(res, 200, { ok: true, reference: result.ref } satisfies ApiSelectResponse);
+            sendJson(res, 200, {
+                ok: true,
+                reference: result.ref,
+                action: result.action
+            } satisfies ApiSelectResponse);
         } catch (error) {
             if (error instanceof ApprovalConflictError) {
                 sendJson(res, 409, { error: error.message });

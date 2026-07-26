@@ -4,6 +4,7 @@ import { firstValueFrom } from 'rxjs';
 import type {
     ApiAuditResponse,
     ApiCancelSelectionRequest,
+    ApiCancelSelectionResponse,
     ApiErrorResponse,
     ApiOkResponse,
     ApiReselectResponse,
@@ -86,9 +87,9 @@ export class GatewayApi {
         );
     }
 
-    cancelSelection(selectionId: string): Promise<ApiOkResponse> {
+    cancelSelection(selectionId: string): Promise<ApiCancelSelectionResponse> {
         return firstValueFrom(
-            this.http.post<ApiOkResponse>('/api/cancel-selection', {
+            this.http.post<ApiCancelSelectionResponse>('/api/cancel-selection', {
                 selection_id: selectionId
             } satisfies ApiCancelSelectionRequest)
         );

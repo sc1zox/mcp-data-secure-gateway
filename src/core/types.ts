@@ -134,6 +134,17 @@ export interface ActionPlan {
     subject?: string;
     body: string;
     attachments: PlannedAttachment[];
+    /**
+     * Which parts of the message the cloud agent wrote rather than the gateway.
+     *
+     * `prepare_action` may supply a subject and a body verbatim — that is the
+     * point when the outgoing message is meant to read like ordinary post and
+     * not like a machine notice. Recording the provenance per field is what lets
+     * the approval view say so, and because it sits inside the plan it is
+     * covered by the binding hash: the text cannot be swapped for agent-written
+     * text after the user read it as locally composed.
+     */
+    authoredByAgent: { subject: boolean; body: boolean };
 }
 
 /** Verdict of the local model, recorded with the action for later review. */
@@ -204,6 +215,15 @@ export interface SelectionRequest {
     status: 'open' | 'resolved' | 'cancelled' | 'expired';
     /** Reference minted once the user picked. */
     resolvedRef?: string;
+    /**
+     * The action this selection was opened from, if any.
+     *
+     * Set when the user asked for a different resource from the approval view.
+     * That action is then parked in `selection_required` rather than thrown
+     * away, so confirming the resource it already pointed at brings it back
+     * instead of forcing Hermes to prepare the whole thing again.
+     */
+    originActionId?: string;
 }
 
 export interface SelectionCandidate {

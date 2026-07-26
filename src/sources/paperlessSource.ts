@@ -136,6 +136,20 @@ export class PaperlessSource implements PrivateSource {
         };
     }
 
+    /**
+     * Deep link into the Paperless web interface, for the local approval UI.
+     *
+     * Only produced for numeric ids, which is what Paperless uses: refusing
+     * anything else means a value that arrived from the MCP server can never be
+     * pasted into a URL the user is invited to click.
+     */
+    webUrl(nativeId: string): string | undefined {
+        if (!this.config.webBaseUrl || !/^\d+$/.test(nativeId)) {
+            return undefined;
+        }
+        return `${this.config.webBaseUrl.replace(/\/+$/, '')}/documents/${nativeId}/details`;
+    }
+
     /** Maps a raw Paperless document object onto the abstract resource model. */
     private toInternalResource(document: Record<string, unknown>): InternalResource | undefined {
         const nativeId = firstString(document, ['id', 'pk', 'document_id', 'documentId']);

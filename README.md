@@ -142,6 +142,14 @@ Die Werkzeugnamen sind konfigurierbar (`tools.search`, `tools.get`, `tools.downl
 Parameternamen werden aus dem vom Server gemeldeten Schema abgeleitet: der Paperless-MCP-Server
 ist eine fremde Komponente und darf seine Felder `query`, `search` oder `q` nennen.
 
+Optional `sources[].webBaseUrl`: die Adresse der Paperless-Weboberfläche. Ist sie gesetzt, führt
+die Freigabeansicht neben jeder Ressource und jedem Auswahlkandidaten einen Link auf das echte
+Dokument — bei mehreren fast gleich betitelten Dokumenten ist ein Blick hinein die einzige
+verlässliche Unterscheidung. Der Link entsteht nur für numerische Paperless-IDs, wird erst beim
+Rendern gebildet (ein nachträglich konfiguriertes `webBaseUrl` gilt also sofort auch für bereits
+vorbereitete Aktionen) und ist rein lokal: die Egress-Prüfung weist jede Antwort an Hermes ab, die
+überhaupt eine URL enthält.
+
 ### Anbindung von Hermes
 
 `hermesInterface.transport`:
@@ -158,24 +166,60 @@ ist eine fremde Komponente und darf seine Felder `query`, `search` oder `q` nenn
    lokale Modell entscheiden. Ergebnis: eine Referenz, ein Hinweis auf notwendige lokale Auswahl,
    oder „nicht gefunden“.
 2. **`list_targets()`** — die erlaubten abstrakten Zielbezeichnungen und ihr Zweck.
-3. **`prepare_action(reference, target, purpose)`** — verbindet Referenz, Ziel und Zweck zu einer
-   Aktion. Es wird nichts übertragen; die Aktion wartet auf die lokale Freigabe.
+3. **`prepare_action(reference, target, purpose, [subject], [body], [note], [recipient])`** —
+   verbindet Referenz, Ziel und Zweck zu einer Aktion. Es wird nichts übertragen; die Aktion
+   wartet auf die lokale Freigabe.
 4. **Lokale Freigabe** — die Oberfläche zeigt Ressource, Quelle, Ziel, Zweck, die geplante Aktion,
    die genauen ausgehenden Daten samt SHA-256, die Bewertung des lokalen Modells und offene Punkte.
    Möglich sind: freigeben, ablehnen, andere Ressource wählen, verwerfen.
 5. **`get_action_status(action_id)`** — `awaiting_local_approval`, `selection_required`,
    `executing`, `completed`, `rejected`, `failed` oder `expired`.
+6. **`await_action_decision(action_id, [timeout_seconds])`** — dasselbe Statusobjekt, aber erst
+   wenn die Aktion endgültig ist.
 
 Bei Mehrdeutigkeit liefert `find_resource` eine Auswahlreferenz. Der Nutzer entscheidet lokal;
-Hermes fragt anschließend mit `pending_selection` erneut an. Wählt der Nutzer in der Freigabeansicht
-eine *andere* Ressource, wird die Aktion verworfen und die Suche lokal neu geöffnet — die
-Handentscheidung des Nutzers hat danach Vorrang vor einer neuen Modellbewertung.
+Hermes fragt anschließend mit `pending_selection` erneut an.
+
+### Betreff und Nachrichtentext
+
+`subject` und `body` sind optional und werden, wenn gesetzt, **wörtlich** versandt — ohne Fußzeile,
+ohne Herkunftshinweis, ohne Umformulierung. Das ist die Voraussetzung dafür, dass über dieses
+Gateway eine Nachricht hinausgehen kann, die beim Empfänger wie gewöhnliche Post aussieht, etwa
+eine Bewerbung. Ohne die beiden Felder stellt das Gateway wie bisher einen neutralen Text aus
+Bezeichnung, Zweck und Zeitpunkt zusammen; `note` wird nur in diesem Fall als ausdrücklich
+zugeschriebener Agentenhinweis angehängt.
+
+Die Kontrolle liegt nicht darin, dass das Gateway den Text bearbeitet, sondern darin, dass der
+Nutzer ihn vollständig liest, bevor etwas passiert: Betreff und Text sind in der Freigabeansicht
+und im Bestätigungsdialog als *vom Agenten verfasst* markiert, und beide sind Teil der
+Freigabebindung — ein nachträglich veränderter Text lässt die Freigabe verfallen. Zeilenumbrüche
+im Betreff werden entfernt, damit daraus keine zweite Kopfzeile entstehen kann.
+
+### Rückmeldung an Hermes
+
+`await_action_decision` blockiert, bis die Aktion endgültig ist (`completed`, `rejected`, `failed`,
+`expired`), höchstens aber `timeout_seconds` (Standard 60, Obergrenze 600). Läuft das Fenster
+vorher ab, kommt der aktuelle Zwischenstand zurück und der Aufruf kann wiederholt werden.
+
+Bewusst ein Warten und kein Webhook: ein Rückruf würde bedeuten, dass ausgerechnet der Rechner mit
+den privaten Dokumenten von sich aus eine Verbindung in die Cloud aufbaut. So bleibt jede Richtung
+erhalten, wie sie ist — das Gateway antwortet, es ruft nicht an.
+
+### Andere Ressource wählen
+
+Wählt der Nutzer in der Freigabeansicht „Andere Ressource wählen“, wird die Aktion **pausiert**
+(`selection_required`), nicht verworfen: Nachsehen ist keine Entscheidung. Bestätigt er danach das
+Dokument, auf das die Aktion ohnehin zeigte, kehrt sie unverändert zurück — gleicher Plan, gleiche
+Freigabebindung, gleicher Ablauf. Wählt er ein anderes, wird sie verworfen, weil die Bindung die
+Ressource mit umfasst und ein anderes Dokument eine neue Aktion braucht. Bricht er die Auswahl ab,
+bleibt alles wie es war. Die Handentscheidung des Nutzers hat danach Vorrang vor einer neuen
+Modellbewertung.
 
 ## Sicherheitsinvarianten und ihre Umsetzung
 
 | # | Invariante | Wo sie durchgesetzt wird |
 | --- | --- | --- |
-| 1 | Hermes hat keinen direkten Zugriff auf private Quellen | Quellen sind nur über `SourceRegistry` im Gateway-Prozess erreichbar; die MCP-Oberfläche kennt vier abstrakte Werkzeuge |
+| 1 | Hermes hat keinen direkten Zugriff auf private Quellen | Quellen sind nur über `SourceRegistry` im Gateway-Prozess erreichbar; die MCP-Oberfläche kennt fünf abstrakte Werkzeuge |
 | 2 | Interne Quellenwerkzeuge werden nicht weitergegeben | `McpSourceClient` ruft Quellwerkzeuge selbst auf; sie werden nie re-exportiert |
 | 3 | Keine Rohdaten an Hermes | `core/egress.ts` baut jede Antwort feldweise nach Whitelist |
 | 4 | Nur opake Referenzen | `util/ids.ts` (CSPRNG), Auflösung ausschließlich über `ReferenceStore` |

@@ -12,9 +12,14 @@ export class ActionTransitionError extends Error {}
  * of its callers (invariant 12).
  */
 const ALLOWED_TRANSITIONS: Record<ActionStatus, readonly ActionStatus[]> = {
-    awaiting_local_approval: ['executing', 'rejected', 'expired', 'failed'],
-    // A prepared action can end up needing a different resource; the user then
-    // discards it and Hermes must prepare a new one.
+    // `selection_required` is the parking state for "the user wants to look at
+    // the resource choice again". It is deliberately reachable from here and
+    // deliberately not approvable, so an action under review cannot be released
+    // while the user is still deciding what it should point at.
+    awaiting_local_approval: ['executing', 'rejected', 'expired', 'failed', 'selection_required'],
+    // Back to awaiting approval when the user confirms the resource the action
+    // already carried; rejected when they pick a different one, because the
+    // binding covers the resource and a new one needs a new action.
     selection_required: ['awaiting_local_approval', 'rejected', 'expired'],
     executing: ['completed', 'failed'],
     completed: [],
@@ -23,11 +28,29 @@ const ALLOWED_TRANSITIONS: Record<ActionStatus, readonly ActionStatus[]> = {
     expired: []
 };
 
+/** Notified after a status change was persisted. */
+export type ActionTransitionListener = (record: ActionRecord) => void;
+
 export class ActionStore {
     private readonly store: JsonlStore<ActionRecord>;
+    private readonly listeners = new Set<ActionTransitionListener>();
 
     constructor(dataDir: string, private readonly audit: AuditLog) {
         this.store = new JsonlStore<ActionRecord>(storePath(dataDir, 'actions'), (record) => record.actionId);
+    }
+
+    /**
+     * Subscribes to status changes.
+     *
+     * Every path that moves an action goes through `transition`, so a listener
+     * registered here sees all of them — the user's decision, delivery
+     * finishing, the sweeper expiring something. That is what lets a waiting
+     * caller be woken instead of polling the store, and it is why the hook lives
+     * on the store rather than on any one of those callers.
+     */
+    onTransition(listener: ActionTransitionListener): () => void {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
     }
 
     async load(): Promise<void> {
@@ -118,6 +141,15 @@ export class ActionStore {
             executedAt: options.executedAt ?? current.executedAt
         };
         await this.store.put(updated);
+        for (const listener of this.listeners) {
+            // A broken listener must not roll back a transition that is already
+            // on disk, nor stop the remaining ones from being told about it.
+            try {
+                listener(updated);
+            } catch {
+                // Intentionally ignored; notification is not part of the state.
+            }
+        }
         return updated;
     }
 

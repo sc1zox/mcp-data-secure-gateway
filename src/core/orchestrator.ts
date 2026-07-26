@@ -21,6 +21,7 @@ import {
     type PublicFindResult,
     type PublicTarget
 } from './egress.js';
+import { TERMINAL_ACTION_STATUSES } from './types.js';
 import type {
     ActionPlan,
     ActionRecord,
@@ -38,6 +39,14 @@ import type {
 const MAX_HERMES_NOTE_CHARS = 500;
 const MAX_PURPOSE_CHARS = 500;
 const MAX_QUERY_CHARS = 500;
+/** An agent-supplied subject line. Single-line by construction, see `clamp`. */
+const MAX_SUBJECT_CHARS = 200;
+/** An agent-supplied message body. Generous, because this may be a real letter. */
+const MAX_BODY_CHARS = 10000;
+
+/** How long `awaitActionDecision` waits by default, and at most. */
+const DEFAULT_DECISION_WAIT_SECONDS = 60;
+const MAX_DECISION_WAIT_SECONDS = 600;
 
 export interface FindResourceInput {
     query: string;
@@ -50,8 +59,28 @@ export interface PrepareActionInput {
     reference: string;
     target: string;
     purpose: string;
-    /** Optional short note from Hermes, shown to the user before approval. */
+    /**
+     * Optional short note from Hermes. Only used when `body` is absent — with an
+     * agent-written body there is nothing for a separately attributed note to
+     * be distinguished from.
+     */
     note?: string;
+    /**
+     * Subject line written by Hermes. Optional; without it the gateway composes
+     * one from the resource label.
+     */
+    subject?: string;
+    /**
+     * Message body written by Hermes, used verbatim. Optional; without it the
+     * gateway composes the previous machine-notice body.
+     *
+     * Verbatim is the point: a message that has to read like ordinary post — an
+     * application, a reply to a request — cannot carry a gateway footer. The
+     * control is not that the gateway edits this text but that the user reads
+     * all of it, marked as agent-written, before releasing it, and that the
+     * binding hash covers it so it cannot change afterwards.
+     */
+    body?: string;
     /**
      * Concrete recipient address. Only accepted for a target whose descriptor
      * sets `dynamicRecipient: true`; required there, refused everywhere else.
@@ -67,13 +96,16 @@ export interface LocalActionView {
     purpose: string;
     createdAt: string;
     expiresAt: string;
-    resource: LocalResourceSummary & { ref: string; safeLabel: string };
+    /** `webUrl` links into the source's own interface; local UI only. */
+    resource: LocalResourceSummary & { ref: string; safeLabel: string; webUrl?: string };
     target: { id: string; label: string; recipientDisplay: string; purpose: string; dynamicRecipient: boolean };
     egress: {
         subject?: string;
         body: string;
         attachments: PlannedAttachment[];
         totalBytes: number;
+        /** Which of subject and body the cloud agent wrote rather than the gateway. */
+        authoredByAgent: { subject: boolean; body: boolean };
     };
     judgement: JudgementRecord;
     /** True when the staged bytes are no longer in memory (e.g. after a restart). */
@@ -87,6 +119,8 @@ export interface LocalSelectionView {
     reasoning: string;
     createdAt: string;
     expiresAt: string;
+    /** Set when a prepared action is parked on this selection. */
+    originActionId?: string;
     candidates: Array<{
         candidateId: string;
         title: string;
@@ -99,8 +133,21 @@ export interface LocalSelectionView {
         mimeType?: string;
         attributes?: Record<string, string | string[]>;
         excerpt?: string;
+        /** Deep link into the source's own interface, if it offers one. */
+        webUrl?: string;
+        /**
+         * True when this is the resource the parked action already points at.
+         * Choosing it confirms the action instead of replacing it.
+         */
+        isCurrent?: boolean;
     }>;
 }
+
+/** What resolving a selection did to the action it was opened from. */
+export type SelectionOutcomeForAction =
+    | { kind: 'none' }
+    | { kind: 'restored'; actionId: string }
+    | { kind: 'discarded'; actionId: string };
 
 export class ApprovalConflictError extends Error {}
 export class UnknownActionError extends Error {}
@@ -141,6 +188,12 @@ export class Orchestrator {
      * a second download.
      */
     private readonly staged = new Map<string, SourceFile>();
+    /**
+     * Callers of `awaitActionDecision`, keyed by action. Woken by the store's
+     * transition hook, so a waiting Hermes learns about a decision the moment it
+     * is persisted instead of finding out on its next poll.
+     */
+    private readonly decisionWaiters = new Map<string, Set<() => void>>();
 
     constructor(
         private readonly config: GatewayConfig,
@@ -155,6 +208,7 @@ export class Orchestrator {
         logger?: Logger
     ) {
         this.log = logger ?? createLogger('orchestrator');
+        this.actions.onTransition((record) => this.wakeWaiters(record.actionId));
     }
 
     // ---------------------------------------------------------------- Hermes API
@@ -280,6 +334,11 @@ export class Orchestrator {
         const correlationId = newQueryId();
         const purpose = clamp(input.purpose, MAX_PURPOSE_CHARS);
         const hermesNote = input.note ? clamp(input.note, MAX_HERMES_NOTE_CHARS) : undefined;
+        // Subject through the single-line clamp: an outgoing mail header must not
+        // be able to grow a second header from an embedded newline. The body keeps
+        // its line breaks, because it is prose the user will read as prose.
+        const agentSubject = emptyToUndefined(clamp(input.subject, MAX_SUBJECT_CHARS));
+        const agentBody = emptyToUndefined(clampMultiline(input.body, MAX_BODY_CHARS));
 
         const recipientInput = input.recipient?.trim();
         await this.audit.record('hermes_request', {
@@ -290,6 +349,8 @@ export class Orchestrator {
                 tool: 'prepare_action',
                 purpose,
                 hasNote: Boolean(hermesNote),
+                agentSubject: agentSubject ?? null,
+                agentBodyChars: agentBody?.length ?? 0,
                 recipientRequested: recipientInput ?? null
             }
         });
@@ -417,13 +478,16 @@ export class Orchestrator {
             recipientDisplay: descriptor.dynamicRecipient ? recipientInput! : descriptor.recipientDisplay,
             dynamicRecipient: descriptor.dynamicRecipient,
             recipientAddress: descriptor.dynamicRecipient ? recipientInput : undefined,
-            subject: buildSubject(record.safeLabel),
-            body: buildBody({
-                safeLabel: assessment.safeLabel ?? record.safeLabel,
-                purpose,
-                hermesNote
-            }),
-            attachments: [attachment]
+            subject: agentSubject ?? buildSubject(record.safeLabel),
+            body:
+                agentBody ??
+                buildBody({
+                    safeLabel: assessment.safeLabel ?? record.safeLabel,
+                    purpose,
+                    hermesNote
+                }),
+            attachments: [attachment],
+            authoredByAgent: { subject: agentSubject !== undefined, body: agentBody !== undefined }
         };
 
         const now = new Date();
@@ -468,6 +532,49 @@ export class Orchestrator {
         const payload = publicActionState(action);
         this.guard.assertClean(payload, 'get_action_status');
         return payload;
+    }
+
+    /**
+     * Blocks until the action is decided and finished, or until the wait window
+     * elapses — the answer to "how does Hermes learn that the user released
+     * this?" without the gateway ever calling outwards.
+     *
+     * Waiting rather than webhooking is a deliberate choice about direction. A
+     * callback would make the machine that holds the private documents open a
+     * connection to the cloud on its own initiative, which is a new egress path
+     * to secure, configure and reason about. Here the flow of causality stays
+     * what it already is: Hermes asks, the gateway answers, and nothing leaves
+     * this machine that a request did not come for.
+     *
+     * It resolves on a terminal status rather than on approval, because
+     * `executing` lasts seconds and reporting it would only buy Hermes another
+     * round trip to learn whether the send actually worked. A timeout is not a
+     * failure: the current state comes back and the call can simply be repeated.
+     */
+    async awaitActionDecision(actionId: string, waitSeconds?: number): Promise<PublicActionState> {
+        const timeoutMs = Math.min(
+            Math.max(waitSeconds ?? DEFAULT_DECISION_WAIT_SECONDS, 1),
+            MAX_DECISION_WAIT_SECONDS
+        ) * 1000;
+        const deadline = Date.now() + timeoutMs;
+
+        for (;;) {
+            const action = this.actions.get(actionId);
+            if (!action) {
+                return this.syntheticActionState('action_unknown', note('action_unknown'), actionId);
+            }
+            if (TERMINAL_ACTION_STATUSES.includes(action.status)) {
+                return this.getActionStatus(actionId);
+            }
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) {
+                return this.getActionStatus(actionId);
+            }
+            // Woken by the store's transition hook; the timer is the backstop for
+            // a status that changes without one, such as an expiry noticed by a
+            // sweep that ran before this call started waiting.
+            await this.waitForTransition(actionId, remaining);
+        }
     }
 
     // ----------------------------------------------------------- local approval
@@ -586,7 +693,10 @@ export class Orchestrator {
      * Hermes learns only that the selection resolved, via `find_resource` with the
      * selection handle.
      */
-    async resolveSelection(selectionId: string, candidateId: string): Promise<{ ref: string }> {
+    async resolveSelection(
+        selectionId: string,
+        candidateId: string
+    ): Promise<{ ref: string; action: SelectionOutcomeForAction }> {
         const request = this.selections.get(selectionId);
         if (!request) {
             throw new UnknownActionError(`Auswahl ${selectionId} ist unbekannt.`);
@@ -611,20 +721,36 @@ export class Orchestrator {
             request.query
         );
         await this.selections.resolve(selectionId, record.ref);
-        return { ref: record.ref };
+        const action = await this.settleParkedAction(request, candidate);
+        return { ref: record.ref, action };
     }
 
-    async cancelSelection(selectionId: string): Promise<void> {
+    /**
+     * Ends a selection without a pick. An action parked on it goes back to
+     * waiting for approval — cancelling the question is not answering it, and
+     * least of all is it a rejection.
+     */
+    async cancelSelection(selectionId: string): Promise<SelectionOutcomeForAction> {
+        const request = this.selections.get(selectionId);
         await this.selections.cancel(selectionId);
+        return this.unpark(request?.originActionId, 'selection_cancelled');
     }
 
     /**
      * "Andere Ressource wählen" from the approval view.
      *
-     * Discards the pending action and re-runs its original search so the user can
-     * pick a different resource by hand. Hermes is told only that the action was
-     * discarded; when it repeats its search, `findResource` returns whatever the
-     * user chose here.
+     * Re-runs the action's original search so the user can look at the
+     * alternatives by hand. The action is *parked*, not discarded: it moves to
+     * `selection_required`, which is not approvable, and waits there.
+     *
+     * The earlier version rejected it up front, which made opening the list an
+     * irreversible act — a user who opened it to check, then confirmed the very
+     * document the action already carried, found the action gone and Hermes
+     * told it had been discarded. Nothing about looking is a decision, so
+     * nothing about looking decides anything now: confirming the same resource
+     * restores the action unchanged, picking a different one discards it (the
+     * binding covers the resource, so a different resource genuinely needs a new
+     * action), and cancelling the selection puts it back as it was.
      */
     async requestReselection(actionId: string): Promise<{ selectionId: string }> {
         const action = this.actions.get(actionId);
@@ -644,9 +770,15 @@ export class Orchestrator {
             );
         }
 
-        // Discard first: the old action must not remain approvable while the user
-        // is choosing a replacement.
-        await this.rejectAction(actionId, true);
+        // Park before searching: while the user is comparing candidates the
+        // action must not be approvable, but it must still be recoverable.
+        await this.actions.transition(actionId, 'selection_required', { reason: 'selection_pending' });
+        await this.audit.record('action_parked', {
+            actionId,
+            resourceRef: action.resourceRef,
+            targetId: action.plan.targetId,
+            detail: { query }
+        });
 
         const candidates: InternalResource[] = [];
         for (const source of this.sources.available()) {
@@ -660,15 +792,18 @@ export class Orchestrator {
             }
         }
         if (candidates.length === 0) {
+            // Nothing to choose between, so there is nothing to park for.
+            await this.unpark(actionId, 'reselection_without_candidates');
             throw new ApprovalConflictError(
-                'Die erneute Suche lieferte keine Kandidaten. Die Aktion wurde verworfen.'
+                'Die erneute Suche lieferte keine Kandidaten. Die Aktion wartet unverändert weiter auf eine Entscheidung.'
             );
         }
         const selection = await this.createSelection(
             query,
             action.purpose,
             candidates,
-            'Der Nutzer hat eine andere Ressource verlangt und wählt lokal aus.'
+            'Der Nutzer hat eine andere Ressource verlangt und wählt lokal aus.',
+            actionId
         );
         return { selectionId: selection.selectionId };
     }
@@ -677,7 +812,11 @@ export class Orchestrator {
     async sweep(): Promise<void> {
         const expiredActions = await this.actions.expireStale();
         for (const action of this.actions.all()) {
-            if (action.status !== 'awaiting_local_approval' && this.staged.has(action.actionId)) {
+            // A parked action keeps its bytes: it is still undecided, and dropping
+            // them would mean a restored action needs a refetch it never earned.
+            const stillOpen =
+                action.status === 'awaiting_local_approval' || action.status === 'selection_required';
+            if (!stillOpen && this.staged.has(action.actionId)) {
                 this.staged.delete(action.actionId);
             }
         }
@@ -693,6 +832,40 @@ export class Orchestrator {
     }
 
     // ------------------------------------------------------------------ internals
+
+    /** Resolves on the next transition of this action, or after `timeoutMs`. */
+    private waitForTransition(actionId: string, timeoutMs: number): Promise<void> {
+        return new Promise<void>((resolveWait) => {
+            let waiters = this.decisionWaiters.get(actionId);
+            if (!waiters) {
+                waiters = new Set();
+                this.decisionWaiters.set(actionId, waiters);
+            }
+            const wake = (): void => {
+                clearTimeout(timer);
+                waiters!.delete(wake);
+                if (waiters!.size === 0) {
+                    this.decisionWaiters.delete(actionId);
+                }
+                resolveWait();
+            };
+            // Deliberately not unref'd: this timer is the only thing holding an
+            // in-flight tool call open, and a call that is still owed an answer
+            // is a reason for the process to stay up.
+            const timer = setTimeout(wake, timeoutMs);
+            waiters.add(wake);
+        });
+    }
+
+    private wakeWaiters(actionId: string): void {
+        const waiters = this.decisionWaiters.get(actionId);
+        if (!waiters) {
+            return;
+        }
+        for (const wake of [...waiters]) {
+            wake();
+        }
+    }
 
     /**
      * Performs the approved transfer. Runs after the human decision and is the
@@ -853,7 +1026,8 @@ export class Orchestrator {
         query: string,
         purpose: string,
         candidates: InternalResource[],
-        reasoning: string
+        reasoning: string,
+        originActionId?: string
     ): Promise<SelectionRequest> {
         const now = new Date();
         const selectionCandidates: SelectionCandidate[] = candidates.map((resource, index) => ({
@@ -870,14 +1044,95 @@ export class Orchestrator {
             expiresAt: new Date(
                 now.getTime() + this.config.approval.selectionTtlSeconds * 1000
             ).toISOString(),
-            status: 'open'
+            status: 'open',
+            originActionId
         };
         await this.selections.create(request);
         this.log.info('Auswahl erforderlich', {
             selectionId: request.selectionId,
-            candidates: selectionCandidates.length
+            candidates: selectionCandidates.length,
+            originActionId: originActionId ?? null
         });
         return request;
+    }
+
+    /**
+     * Decides what a resolved selection means for the action parked on it.
+     *
+     * Same resource in the same state as the action was prepared against: the
+     * user confirmed what was already there, so the action comes back exactly as
+     * it was — same plan, same binding hash, same countdown. Anything else — a
+     * different document, or the same one after it changed — cannot be squared
+     * with a binding that pins the resource and its state, so the action is
+     * discarded and Hermes has to prepare a new one against the new reference.
+     */
+    private async settleParkedAction(
+        request: SelectionRequest,
+        candidate: SelectionCandidate
+    ): Promise<SelectionOutcomeForAction> {
+        const actionId = request.originActionId;
+        if (!actionId) {
+            return { kind: 'none' };
+        }
+        const action = this.actions.get(actionId);
+        if (!action || action.status !== 'selection_required') {
+            return { kind: 'none' };
+        }
+
+        const record = this.references.resolve(action.resourceRef);
+        const unchanged =
+            record !== undefined &&
+            record.locator.sourceId === candidate.resource.locator.sourceId &&
+            record.locator.nativeId === candidate.resource.locator.nativeId &&
+            safeEqual(resourceStateHash(candidate.resource), action.resourceStateHash);
+
+        if (unchanged) {
+            // `unpark` reports `none` if the action expired while the user was
+            // comparing candidates, which is the honest answer here too.
+            return this.unpark(actionId, 'selection_confirmed_same_resource');
+        }
+
+        await this.actions.transition(actionId, 'rejected', {
+            reason: 'user_discarded',
+            decidedAt: new Date().toISOString()
+        });
+        this.staged.delete(actionId);
+        await this.audit.record('action_discarded', {
+            actionId,
+            resourceRef: action.resourceRef,
+            targetId: action.plan.targetId,
+            selectionId: request.selectionId,
+            detail: { reason: 'user_chose_other_resource' }
+        });
+        return { kind: 'discarded', actionId };
+    }
+
+    /** Returns a parked action to the approval queue. A no-op for anything else. */
+    private async unpark(
+        actionId: string | undefined,
+        reason: string
+    ): Promise<SelectionOutcomeForAction> {
+        if (!actionId) {
+            return { kind: 'none' };
+        }
+        const action = this.actions.get(actionId);
+        if (!action || action.status !== 'selection_required') {
+            return { kind: 'none' };
+        }
+        if (Date.parse(action.expiresAt) <= Date.now()) {
+            // Restoring it would only offer the user a button that the approval
+            // path refuses a moment later.
+            await this.actions.transition(actionId, 'expired', { reason: 'action_expired' });
+            return { kind: 'none' };
+        }
+        await this.actions.transition(actionId, 'awaiting_local_approval', { reason: 'awaiting_user' });
+        await this.audit.record('action_restored', {
+            actionId,
+            resourceRef: action.resourceRef,
+            targetId: action.plan.targetId,
+            detail: { reason }
+        });
+        return { kind: 'restored', actionId };
     }
 
     /** Answers a `find_resource` call that carries a selection handle. */
@@ -996,7 +1251,11 @@ export class Orchestrator {
             resource: {
                 ...summary,
                 ref: action.resourceRef,
-                safeLabel: record?.safeLabel ?? '(unbekannt)'
+                safeLabel: record?.safeLabel ?? '(unbekannt)',
+                // Resolved at view time rather than stored with the reference, so
+                // configuring the source's web address later lights up the links
+                // on actions that already exist.
+                webUrl: record ? this.webUrlFor(record.locator.sourceId, record.locator.nativeId) : undefined
             },
             target: {
                 id: action.plan.targetId,
@@ -1009,7 +1268,10 @@ export class Orchestrator {
                 subject: action.plan.subject,
                 body: action.plan.body,
                 attachments: action.plan.attachments,
-                totalBytes: action.plan.attachments.reduce((sum, item) => sum + item.byteSize, 0)
+                totalBytes: action.plan.attachments.reduce((sum, item) => sum + item.byteSize, 0),
+                // Older records predate the field; absent means the gateway wrote
+                // both, which is what those actions in fact carry.
+                authoredByAgent: action.plan.authoredByAgent ?? { subject: false, body: false }
             },
             judgement: action.judgement,
             needsRefetch: !this.staged.has(action.actionId)
@@ -1017,6 +1279,14 @@ export class Orchestrator {
     }
 
     private toLocalSelectionView(request: SelectionRequest): LocalSelectionView {
+        // Which candidate the parked action already points at, so the UI can say
+        // "this is the current one" instead of making the user match ids by eye.
+        const parked = request.originActionId ? this.actions.get(request.originActionId) : undefined;
+        const current =
+            parked?.status === 'selection_required'
+                ? this.references.resolve(parked.resourceRef)?.locator
+                : undefined;
+
         return {
             selectionId: request.selectionId,
             query: request.query,
@@ -1024,6 +1294,7 @@ export class Orchestrator {
             reasoning: request.reasoning,
             createdAt: request.createdAt,
             expiresAt: request.expiresAt,
+            originActionId: parked?.status === 'selection_required' ? parked.actionId : undefined,
             candidates: request.candidates.map((candidate) => ({
                 candidateId: candidate.candidateId,
                 title: candidate.resource.title,
@@ -1035,9 +1306,23 @@ export class Orchestrator {
                 modifiedAt: candidate.resource.modifiedAt,
                 mimeType: candidate.resource.mimeType,
                 attributes: candidate.resource.attributes,
-                excerpt: candidate.resource.excerpt
+                excerpt: candidate.resource.excerpt,
+                webUrl: this.webUrlFor(
+                    candidate.resource.locator.sourceId,
+                    candidate.resource.locator.nativeId
+                ),
+                isCurrent:
+                    current !== undefined &&
+                    current.sourceId === candidate.resource.locator.sourceId &&
+                    current.nativeId === candidate.resource.locator.nativeId
             }))
         };
+    }
+
+    /** Deep link into a source's own interface, when that source offers one. */
+    private webUrlFor(sourceId: string, nativeId: string): string | undefined {
+        const source = this.sources.get(sourceId);
+        return source?.webUrl?.(nativeId);
     }
 }
 
@@ -1118,4 +1403,30 @@ function clamp(value: string | undefined, limit: number): string {
     }
     const normalised = value.replace(/\s+/g, ' ').trim();
     return normalised.length <= limit ? normalised : normalised.slice(0, limit);
+}
+
+/**
+ * Clamp for text that is meant to be read as prose: line breaks survive,
+ * everything else that could carry structure does not.
+ *
+ * Control characters are dropped rather than escaped. In a mail body they are
+ * invisible, so text containing them would render to the user in the approval
+ * view as something subtly different from what the transport later sends — and
+ * this view's whole purpose is that the two are the same thing.
+ */
+function clampMultiline(value: string | undefined, limit: number): string {
+    if (typeof value !== 'string') {
+        return '';
+    }
+    const normalised = value
+        .replace(/\r\n?/g, '\n')
+        .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+        .replace(/[ \t]+$/gm, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    return normalised.length <= limit ? normalised : `${normalised.slice(0, limit - 1).trimEnd()}…`;
+}
+
+function emptyToUndefined(value: string): string | undefined {
+    return value.length > 0 ? value : undefined;
 }

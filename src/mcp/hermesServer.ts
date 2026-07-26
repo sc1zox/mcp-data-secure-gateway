@@ -13,11 +13,17 @@ import { createLogger, describeError, type Logger } from '../util/log.js';
 /**
  * The gateway's public face.
  *
- * This is the complete surface Hermes can reach. Four tools, all abstract:
+ * This is the complete surface Hermes can reach. Five tools, all abstract:
  * describe what you want, ask where things may go, prepare something, ask how it
- * went. There is intentionally no tool to read a document, no tool to download
- * anything, no passthrough to a source's own tools, and no tool that approves
- * (invariants 1, 2, 3, 7).
+ * went, wait for how it went. There is intentionally no tool to read a document,
+ * no tool to download anything, no passthrough to a source's own tools, and no
+ * tool that approves (invariants 1, 2, 3, 7).
+ *
+ * `await_action_decision` is the deliberate answer to "how does the agent learn
+ * that the user released something?". It is a wait, not a callback: the gateway
+ * never opens a connection outwards on its own initiative, so the direction of
+ * every byte that leaves this machine stays a consequence of a request that came
+ * in — which is the property a webhook would have given up.
  *
  * The handlers here are thin. Every decision lives in the orchestrator, and every
  * response shape comes from the egress guard, so this file cannot become a second
@@ -35,7 +41,9 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
                 'Ablauf: find_resource (Beschreibung + Zweck) liefert eine opake Referenz.',
                 'list_targets nennt die erlaubten Ziele. prepare_action verbindet Referenz, Ziel',
                 'und Zweck zu einer Aktion, die auf die lokale Freigabe des Nutzers wartet.',
-                'get_action_status meldet den Fortschritt.',
+                'get_action_status meldet den Fortschritt, await_action_decision wartet auf die',
+                'Entscheidung des Nutzers. Ein Rückruf an den Agenten findet nicht statt: das',
+                'Gateway ruft von sich aus nirgends an, es antwortet nur.',
                 '',
                 'Wichtig: Dokumentinhalte, interne Kennungen und Zugangsdaten sind über dieses',
                 'Gateway nicht abrufbar. Jede Übertragung erfordert eine lokale Freigabe durch',
@@ -123,7 +131,15 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
                 'Der Zweck muss dem Zweck der Suche entsprechen, mit der die Referenz entstanden ist.',
                 'recipient ist nur für Ziele mit dynamic_recipient=true zulässig (dort zwingend);',
                 'bei jedem anderen Ziel führt ein angegebener recipient zur Ablehnung der Anfrage.',
-                'Status danach über get_action_status abfragen.'
+                '',
+                'subject und body sind optional. Werden sie gesetzt, gehen sie unverändert als',
+                'Betreff und Nachrichtentext hinaus; ohne sie stellt das Gateway einen neutralen',
+                'Hinweistext zusammen. Beides wird dem Nutzer vor der Freigabe vollständig und',
+                'als vom Agenten verfasst gekennzeichnet angezeigt und ist Teil der Freigabe-',
+                'bindung: nachträglich ist daran nichts mehr änderbar.',
+                '',
+                'Status danach über get_action_status abfragen oder mit await_action_decision',
+                'auf die Entscheidung des Nutzers warten.'
             ].join('\n'),
             inputSchema: {
                 reference: z.string().min(1).max(64).describe('Opake Ressourcenreferenz aus find_resource.'),
@@ -142,7 +158,28 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
                     .max(500)
                     .optional()
                     .describe(
-                        'Optionaler kurzer Hinweis, der dem Nutzer bei der Freigabe angezeigt und der Nachricht als Agentenhinweis beigefügt wird.'
+                        'Optionaler kurzer Hinweis, der der vom Gateway zusammengestellten Nachricht als ' +
+                            'ausdrücklich zugeschriebener Agentenhinweis beigefügt wird. Wird ignoriert, ' +
+                            'wenn body gesetzt ist — dann ist der gesamte Text ohnehin vom Agenten.'
+                    ),
+                subject: z
+                    .string()
+                    .max(200)
+                    .optional()
+                    .describe(
+                        'Betreff der Nachricht, wörtlich übernommen. Ohne Angabe erzeugt das Gateway ' +
+                            'einen neutralen Betreff aus der Ressourcenbezeichnung. Zeilenumbrüche ' +
+                            'werden entfernt.'
+                    ),
+                body: z
+                    .string()
+                    .max(10000)
+                    .optional()
+                    .describe(
+                        'Nachrichtentext, wörtlich übernommen — ohne Zusätze, Fußzeile oder Hinweis ' +
+                            'des Gateways. Ohne Angabe stellt das Gateway einen neutralen Text aus ' +
+                            'Bezeichnung, Zweck und Zeitpunkt zusammen. Der Nutzer liest den Text ' +
+                            'vollständig, bevor er freigibt.'
                     ),
                 recipient: z
                     .string()
@@ -165,6 +202,8 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
                 target: args.target,
                 purpose: args.purpose,
                 note: args.note,
+                subject: args.subject,
+                body: args.body,
                 recipient: args.recipient
             });
             return jsonResult(result);
@@ -186,6 +225,37 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
             annotations: { readOnlyHint: true, openWorldHint: false }
         },
         async (args) => jsonResult(orchestrator.getActionStatus(args.action_id))
+    );
+
+    server.registerTool(
+        'await_action_decision',
+        {
+            title: 'Auf Entscheidung warten',
+            description: [
+                'Wartet, bis der Nutzer über eine vorbereitete Aktion entschieden und das Gateway',
+                'sie zu Ende geführt hat, und antwortet dann mit demselben Statusobjekt wie',
+                'get_action_status. Das ist der vorgesehene Weg, eine Freigabe mitzubekommen:',
+                'es gibt keinen Rückruf und keinen Webhook, das Gateway ruft von sich aus nirgends an.',
+                '',
+                'Antwortet frühestens, wenn die Aktion endgültig ist (completed, rejected, failed,',
+                'expired). Läuft das Zeitfenster vorher ab, kommt der aktuelle Zwischenstand',
+                '(in der Regel awaiting_local_approval) zurück; der Aufruf kann dann einfach',
+                'wiederholt werden. Warten beschleunigt oder ersetzt die lokale Freigabe nicht.'
+            ].join('\n'),
+            inputSchema: {
+                action_id: z.string().min(1).max(64).describe('Aktionsreferenz aus prepare_action.'),
+                timeout_seconds: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .max(600)
+                    .optional()
+                    .describe('Maximale Wartezeit in Sekunden (Standard 60, Obergrenze 600).')
+            },
+            annotations: { readOnlyHint: true, openWorldHint: false }
+        },
+        async (args) =>
+            jsonResult(await orchestrator.awaitActionDecision(args.action_id, args.timeout_seconds))
     );
 
     log.debug('MCP-Server für Hermes aufgebaut');

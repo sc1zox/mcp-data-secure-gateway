@@ -40,6 +40,19 @@ export interface PrivateSource {
      * user approved it — never during search, and never on Hermes's behalf.
      */
     fetchOriginal(nativeId: string): Promise<SourceFile>;
+
+    /**
+     * Address of the resource in the source's own web interface, for the local
+     * approval UI to link to. Optional in both senses: a source need not
+     * implement it, and an implementation returns `undefined` when no web base
+     * URL is configured.
+     *
+     * This is the one place a source hands out something location-shaped, and it
+     * goes exactly one way — into the local UI. The egress guard rejects any
+     * payload towards Hermes containing a URL, so a link that ever took the
+     * wrong turn fails loudly rather than quietly.
+     */
+    webUrl?(nativeId: string): string | undefined;
 }
 
 export interface SourceFile {

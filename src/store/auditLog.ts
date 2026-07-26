@@ -32,6 +32,10 @@ export type AuditEventType =
     | 'action_approved'
     | 'action_rejected'
     | 'action_discarded'
+    /** Parked while the user re-picks the resource; not a decision yet. */
+    | 'action_parked'
+    /** Un-parked after the user confirmed the resource it already carried. */
+    | 'action_restored'
     | 'action_binding_mismatch'
     | 'egress_performed'
     | 'egress_failed'
@@ -79,10 +83,14 @@ export class AuditLog {
 
     /** Most recent entries first. Used by the local history view. */
     async tail(limit = 200): Promise<AuditEvent[]> {
+        // Flush first, then look. The other order asks whether the file exists
+        // before the writes that would create it have run — and `record` is
+        // deliberately fire-and-forget in places, so on a fresh trail the very
+        // events a reader is asking about are exactly the ones still queued.
+        await this.writeChain;
         if (!existsSync(this.filePath)) {
             return [];
         }
-        await this.writeChain;
         const content = await readFile(this.filePath, 'utf8');
         const events: AuditEvent[] = [];
         for (const line of content.split('\n')) {

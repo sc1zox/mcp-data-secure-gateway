@@ -85,6 +85,17 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
                         <p class="recipient">{{ action().target.recipientDisplay }}</p>
                     }
 
+                    @if (agentWroteAnything()) {
+                        <div class="strip caution">
+                            <ltg-icon name="alert" [size]="16" />
+                            <span>
+                                {{ agentAuthorship() }} stammt wörtlich vom Agenten und
+                                {{ agentAuthorshipVerb() }} unverändert versandt — das Gateway hat
+                                daran nichts formuliert und nichts geprüft. Vollständig lesen.
+                            </span>
+                        </div>
+                    }
+
                     <ltg-fields>
                         <ltg-field label="Ziel">
                             {{ action().target.label }}
@@ -92,15 +103,28 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
                                 <span class="ltg-mono">→ {{ action().target.recipientDisplay }}</span>
                             }
                         </ltg-field>
-                        <ltg-field label="Betreff">{{ subject() }}</ltg-field>
+                        <ltg-field label="Betreff">
+                            {{ subject() }}
+                            @if (action().egress.authoredByAgent.subject) {
+                                <span class="by-agent">vom Agenten</span>
+                            }
+                        </ltg-field>
                         <ltg-field label="Umfang">
                             {{ action().egress.attachments.length }} Anhang/Anhänge ·
                             {{ totalBytes() }}
                         </ltg-field>
                     </ltg-fields>
 
-                    <p class="label">Nachrichtentext</p>
-                    <pre class="body-text">{{ action().egress.body }}</pre>
+                    <p class="label">
+                        Nachrichtentext
+                        @if (action().egress.authoredByAgent.body) {
+                            <span class="by-agent">vom Agenten</span>
+                        }
+                    </p>
+                    <pre
+                        class="body-text"
+                        [class.agent]="action().egress.authoredByAgent.body"
+                    >{{ action().egress.body }}</pre>
 
                     @if (action().egress.attachments.length > 0) {
                         <p class="label">Anhänge</p>
@@ -135,6 +159,17 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
                             <span class="ltg-mono ltg-muted">
                                 (Kennung {{ action().resource.nativeIdDisplay }})
                             </span>
+                            @if (action().resource.webUrl; as href) {
+                                <a
+                                    class="open-source"
+                                    [href]="href"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                >
+                                    Dokument öffnen
+                                    <ltg-icon name="chevron" [size]="14" />
+                                </a>
+                            }
                         </ltg-field>
                         <ltg-field label="Zweck">{{ action().purpose }}</ltg-field>
                         <ltg-field label="Vorbereitet">{{ createdAt() }}</ltg-field>
@@ -202,7 +237,7 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
                     matButton
                     type="button"
                     [disabled]="busy()"
-                    matTooltip="Öffnet eine lokale Auswahl, um eine andere Ressource zu wählen."
+                    matTooltip="Öffnet eine lokale Auswahl. Die Aktion pausiert dabei nur: bestätigst du das bisherige Dokument, wartet sie unverändert weiter."
                     (click)="decide.emit('reselect')"
                 >
                     Andere Ressource wählen
@@ -339,6 +374,39 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
             color: var(--mat-sys-on-surface-variant);
         }
 
+        /*
+         * Agent-written text is called out wherever it appears rather than only
+         * in the banner: by the time the eye reaches the message block, a strip
+         * three sections up has stopped being on screen.
+         */
+        .by-agent {
+            display: inline-block;
+            margin-left: 0.4rem;
+            padding: 0.05rem 0.4rem;
+            border-radius: 999px;
+            background: var(--ltg-caution-surface);
+            color: var(--ltg-caution);
+            font-size: 0.68rem;
+            font-weight: 700;
+            text-transform: none;
+            letter-spacing: 0;
+            vertical-align: middle;
+        }
+
+        .open-source {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.15rem;
+            margin-left: 0.5rem;
+            color: var(--mat-sys-primary);
+            font-size: 0.82rem;
+            text-decoration: none;
+        }
+
+        .open-source:hover {
+            text-decoration: underline;
+        }
+
         .body-text {
             margin: 0;
             padding: 0.75rem 0.9rem;
@@ -352,6 +420,10 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
             overflow-wrap: anywhere;
             max-height: 18rem;
             overflow-y: auto;
+        }
+
+        .body-text.agent {
+            border-color: var(--ltg-caution);
         }
 
         .files {
@@ -475,6 +547,21 @@ export class ApprovalDetail {
     protected readonly attributes = computed(() => formatAttributes(this.action().resource.attributes));
     protected readonly confidence = computed(() => formatConfidence(this.action().judgement.confidence));
     protected readonly uncertainties = computed(() => this.action().judgement.uncertainties);
+
+    private readonly authored = computed(() => this.action().egress.authoredByAgent);
+    protected readonly agentWroteAnything = computed(
+        () => this.authored().subject || this.authored().body
+    );
+    protected readonly agentAuthorship = computed(() => {
+        const { subject, body } = this.authored();
+        if (subject && body) {
+            return 'Betreff und Nachrichtentext';
+        }
+        return subject ? 'Der Betreff' : 'Der Nachrichtentext';
+    });
+    protected readonly agentAuthorshipVerb = computed(() =>
+        this.authored().subject && this.authored().body ? 'werden' : 'wird'
+    );
 
     protected bytes(value: number): string {
         return formatBytes(value);

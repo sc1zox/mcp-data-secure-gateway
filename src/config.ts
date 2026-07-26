@@ -54,6 +54,16 @@ const paperlessSourceSchema = z.object({
             download: z.string().default('download_document')
         })
         .default({}),
+    /**
+     * Base URL of the Paperless web interface, e.g. `https://paperless.lan`.
+     *
+     * Purely a convenience for the local approval UI: with it set, a candidate
+     * or a prepared action gets a link that opens the real document in
+     * Paperless, so the user can look at the thing itself instead of deciding
+     * from a title and an excerpt. Optional, and local-only — the egress guard
+     * refuses any payload towards Hermes that contains a URL at all.
+     */
+    webBaseUrl: z.string().url().optional(),
     /** Upper bound on candidates pulled from the source per search. */
     maxCandidates: z.number().int().min(1).max(50).default(8),
     /** How much text per candidate is handed to the local model. */
