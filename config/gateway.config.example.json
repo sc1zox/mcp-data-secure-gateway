@@ -54,7 +54,7 @@
       "from": "gateway@example.org",
       "to": "ich@example.org",
       "maxAttachments": 10,
-      "maxAttachmentBytes": 17825792
+      "maxAttachmentBytes": 14542294
     },
     {
       "id": "job_application_mail",
@@ -72,7 +72,7 @@
       "from": "gateway@example.org",
       "allowDynamicRecipient": true,
       "maxAttachments": 10,
-      "maxAttachmentBytes": 17825792
+      "maxAttachmentBytes": 14542294
     },
     {
       "id": "private_telegram",

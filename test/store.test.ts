@@ -440,7 +440,7 @@ describe('Konfiguration', () => {
         const defaultConfig = makeConfig();
         const defaultTarget = defaultConfig.targets[0]!;
         assert.equal(defaultTarget.kind, 'smtp');
-        assert.equal(defaultTarget.maxAttachmentBytes, 17 * 1024 * 1024);
+        assert.equal(defaultTarget.maxAttachmentBytes, 14_542_294);
 
         const configured = makeConfig({
             targets: [

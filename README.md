@@ -375,11 +375,11 @@ noch gültig, erreichbar und unverändert sein. `list_targets` meldet `max_attac
 unveränderten Originalanhänge einer Nachricht, nicht pro Datei. Dateinamen, Inhalte und einzelne
 Dateigrößen verlassen dabei nicht das Gateway.
 
-Für SMTP ist der Standard `17825792` Byte (17 MiB). Das ist absichtlich weniger als ein übliches
-25-MB-Nachrichtenlimit: SMTP bewertet die vollständige MIME-Nachricht, und base64 vergrößert binäre
-Anhänge zusammen mit Zeilenumbrüchen um ungefähr 37 Prozent. Der bisherige Wert von 20 MiB
-Rohdaten konnte deshalb trotz bestandener Gateway-Prüfung an einem 25-MB-SMTP-Limit scheitern.
-Telegram behält seinen separaten Standard von 50 MiB.
+Für SMTP ist der Standard `14542294` Byte (`floor((20 MiB - 1 MiB) / 1.37)`). SMTP bewertet die
+vollständige MIME-Nachricht, und base64 vergrößert binäre Anhänge zusammen mit Zeilenumbrüchen um
+ungefähr 37 Prozent. Die 1-MiB-Reserve lässt Platz für Text, Header und MIME-Grenzen, damit die
+vollständige Nachricht innerhalb des dokumentierten Maximums von 20 MiB bleibt. Telegram behält
+seinen separaten Standard von 50 MiB.
 
 PDFs werden nicht automatisch komprimiert oder gebündelt. Übliche PDFs enthalten bereits
 komprimierte Bild- und Datenströme; ZIP spart dort oft kaum Platz, verschlechtert die
