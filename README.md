@@ -369,9 +369,49 @@ Aktion gelesen werden.
 
 `reference` und `references` zugleich, eine leere Liste, doppelte oder nicht opak geformte
 Referenzen werden abgelehnt. Jede Referenz muss für exakt denselben angegebenen Zweck geprägt,
-noch gültig, erreichbar und unverändert sein. `list_targets` meldet `max_attachments`; lokal setzt
-`targets[].maxAttachments` diese Obergrenze (Standard 10, höchstens 50). `maxAttachmentBytes` gilt
-für die Summe aller Anhänge einer Nachricht, nicht pro Datei.
+noch gültig, erreichbar und unverändert sein. `list_targets` meldet `max_attachments` und
+`max_attachment_bytes`; lokal setzen `targets[].maxAttachments` (Standard 10, höchstens 50) und
+`targets[].maxAttachmentBytes` diese Obergrenzen. Das Byte-Limit gilt für die Summe der
+unveränderten Originalanhänge einer Nachricht, nicht pro Datei. Dateinamen, Inhalte und einzelne
+Dateigrößen verlassen dabei nicht das Gateway.
+
+Für SMTP ist der Standard `17825792` Byte (17 MiB). Das ist absichtlich weniger als ein übliches
+25-MB-Nachrichtenlimit: SMTP bewertet die vollständige MIME-Nachricht, und base64 vergrößert binäre
+Anhänge zusammen mit Zeilenumbrüchen um ungefähr 37 Prozent. Der bisherige Wert von 20 MiB
+Rohdaten konnte deshalb trotz bestandener Gateway-Prüfung an einem 25-MB-SMTP-Limit scheitern.
+Telegram behält seinen separaten Standard von 50 MiB.
+
+PDFs werden nicht automatisch komprimiert oder gebündelt. Übliche PDFs enthalten bereits
+komprimierte Bild- und Datenströme; ZIP spart dort oft kaum Platz, verschlechtert die
+Empfängerkompatibilität und ändert das ausgelieferte Format. Eine verlustfreie, verlässlich
+wirksame PDF-Optimierung bräuchte einen eigens vertrauten und konfigurierten Backend-Prozess, den
+dieses Projekt nicht mitbringt. Das Gateway führt daher keine externen Programme aus und schreibt
+Dokumente nicht um.
+
+### SMTP-Limit für größere Anhangsmengen konfigurieren
+
+Soll beispielsweise CV + SCHUFA + Vertrag als **eine** Nachricht versandt werden:
+
+1. Die Rohgrößen der drei lokalen Dateien bzw. die in der Freigabeansicht gezeigte Gesamtsumme
+   bestimmen. Diese Werte bleiben lokal.
+2. Beim SMTP-Anbieter das Limit der vollständigen MIME-Nachricht prüfen, nicht nur ein eventuell
+   beworbenes „Anhangslimit“. Für ein Limit `M` sollte der konfigurierte Rohdatenwert höchstens
+   `floor((M - 1 MiB) / 1.37)` sein; das 1 MiB ist Reserve für Text, Header und MIME-Grenzen.
+3. Nur am betreffenden SMTP-Ziel `maxAttachmentBytes` auf diesen geprüften Rohdatenwert setzen.
+   Beispiel für ein bestätigtes 50-MiB-Nachrichtenlimit:
+
+   ```json
+   "maxAttachmentBytes": 37503813
+   ```
+
+4. Gateway neu starten und mit `list_targets` kontrollieren, dass
+   `max_attachment_bytes` den Wert meldet. Danach eine neue Aktion vorbereiten; bereits
+   abgelehnte Aktionen werden nicht nachträglich verändert.
+
+Der Wert hebt nur die lokale Obergrenze an. Die strikte Summenprüfung vor der Freigabe und die
+zweite Prüfung unmittelbar vor dem SMTP-Versand bleiben aktiv. Ist die Summe größer als der vom
+Anbieter sicher unterstützte Rohdatenwert, bleibt die ehrliche Alternative: Dateien außerhalb
+dieses Gateways verlustfrei verkleinern oder auf mehrere Nachrichten verteilen.
 
 Die Freigabeoberfläche zeigt jede lokale Ressource mit Quelle, Kennung, Link, Inhaltsgrundlage und
 eigener Modellbewertung sowie jeden ausgehenden Anhang mit Dateiname, Medientyp, Größe und SHA-256.

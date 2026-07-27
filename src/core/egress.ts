@@ -151,6 +151,8 @@ export interface PublicTarget {
     dynamic_recipient: boolean;
     /** Maximum number of opaque references accepted by one action. */
     max_attachments: number;
+    /** Maximum aggregate raw bytes of all attachments in one action. */
+    max_attachment_bytes: number;
 }
 
 export interface PublicActionState {
@@ -368,7 +370,8 @@ export function publicTarget(descriptor: TargetDescriptor): PublicTarget {
         purpose: descriptor.purpose,
         accepts_attachments: descriptor.supportsAttachments,
         dynamic_recipient: descriptor.dynamicRecipient,
-        max_attachments: descriptor.maxAttachments ?? 1
+        max_attachments: descriptor.maxAttachments ?? 1,
+        max_attachment_bytes: descriptor.maxAttachmentBytes
     };
 }
 

@@ -134,7 +134,9 @@ const mailTargetSchema = z.object({
         .number()
         .int()
         .min(1)
-        .default(20 * 1024 * 1024)
+        // A 25 MB SMTP message limit applies after base64 and MIME framing.
+        // 17 MiB raw leaves conservative headroom for that expansion.
+        .default(17 * 1024 * 1024)
 });
 
 const telegramTargetSchema = z.object({

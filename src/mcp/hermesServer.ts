@@ -126,7 +126,8 @@ export function createHermesServer(orchestrator: Orchestrator, logger?: Logger):
             description: [
                 'Nennt die lokal konfigurierten Ziele und ihren Zweck. Nur diese abstrakten',
                 'Bezeichnungen sind in prepare_action verwendbar. Jedes Ziel meldet',
-                'max_attachments als lokal konfigurierte Obergrenze.',
+                'max_attachments und max_attachment_bytes als lokal konfigurierte Obergrenzen;',
+                'max_attachment_bytes gilt für die Summe der unveränderten Originalanhänge.',
                 'dynamic_recipient: true bedeutet, prepare_action braucht dafür einen',
                 'recipient-Parameter; false bedeutet, der Empfänger ist fest und ein',
                 'angegebener recipient wird abgelehnt.'

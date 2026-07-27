@@ -118,6 +118,18 @@ describe('Werkzeugoberfläche', () => {
         const found = await call(client, 'find_resource', { query: QUERY, purpose: PURPOSE });
         const targets = await call(client, 'list_targets', {});
         assert.equal(targets.targets[0].max_attachments, 10);
+        assert.equal(targets.targets[0].max_attachment_bytes, 1024 * 1024);
+        assert.deepEqual(
+            Object.keys(targets.targets[0]).sort(),
+            [
+                'accepts_attachments',
+                'dynamic_recipient',
+                'max_attachment_bytes',
+                'max_attachments',
+                'purpose',
+                'target'
+            ]
+        );
 
         const state = await call(client, 'prepare_action', {
             reference: found.resource.reference,

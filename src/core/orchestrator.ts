@@ -469,7 +469,7 @@ export class Orchestrator {
             return resolvedSet.refusal;
         }
 
-        const limit = descriptor.maxAttachmentBytes ?? Number.POSITIVE_INFINITY;
+        const limit = descriptor.maxAttachmentBytes;
         // Read originals sequentially after the set-wide metadata gate. This
         // bounds peak work by the configured total instead of launching up to 50
         // potentially large downloads before the limit can be applied.

@@ -393,7 +393,7 @@ export interface TargetDescriptor {
     /** Whether the target can carry file attachments. */
     supportsAttachments: boolean;
     /** Upper bound on the total bytes of all attachments in one transfer. */
-    maxAttachmentBytes?: number;
+    maxAttachmentBytes: number;
     /** Maximum number of attachments accepted in one approved transfer. */
     maxAttachments?: number;
 }

@@ -436,6 +436,29 @@ describe('Konfiguration', () => {
         delete process.env.LTG_TEST_TOKEN;
     });
 
+    it('setzt für SMTP ein MIME-sicheres Standardlimit und respektiert explizite Overrides', () => {
+        const defaultConfig = makeConfig();
+        const defaultTarget = defaultConfig.targets[0]!;
+        assert.equal(defaultTarget.kind, 'smtp');
+        assert.equal(defaultTarget.maxAttachmentBytes, 17 * 1024 * 1024);
+
+        const configured = makeConfig({
+            targets: [
+                {
+                    id: 'private_mail',
+                    kind: 'smtp',
+                    smtp: { host: 'h', user: 'u', password: 'p' },
+                    from: 'a@b.de',
+                    to: 'c@d.de',
+                    maxAttachmentBytes: 30 * 1024 * 1024
+                }
+            ]
+        });
+        const configuredTarget = configured.targets[0]!;
+        assert.equal(configuredTarget.kind, 'smtp');
+        assert.equal(configuredTarget.maxAttachmentBytes, 30 * 1024 * 1024);
+    });
+
     it('meldet eine fehlende Umgebungsvariable als Fehler', () => {
         assert.throws(
             () =>
