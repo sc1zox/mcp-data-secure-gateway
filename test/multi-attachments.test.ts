@@ -329,7 +329,9 @@ describe('Mehrere Anhänge pro Aktion', () => {
 
         const view = created.orchestrator.localAction(state.action_id);
         assert.ok(view?.kind === 'send_resource');
-        (created.orchestrator as unknown as { staged: Map<string, unknown> }).staged.delete(state.action_id);
+        (
+            created.orchestrator as unknown as { actionExecutor: { discard(actionId: string): void } }
+        ).actionExecutor.discard(state.action_id);
         const fetchesBeforeApproval = created.source.originalFetches.length;
 
         await created.orchestrator.approveAction(state.action_id, view.bindingHash);

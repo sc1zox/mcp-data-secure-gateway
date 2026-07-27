@@ -342,7 +342,9 @@ describe('Invariante 12: freigegebene Aktionen sind unveränderlich', () => {
         // different bytes than the ones the user approved.
         await orchestrator.sweep();
         source.bytes = new Uint8Array([9, 9, 9]);
-        (orchestrator as unknown as { staged: Map<string, unknown> }).staged.delete(prepared.action_id);
+        (
+            orchestrator as unknown as { actionExecutor: { discard(actionId: string): void } }
+        ).actionExecutor.discard(prepared.action_id);
 
         await orchestrator.approveAction(prepared.action_id, view.bindingHash);
         await waitForTerminal(orchestrator, prepared.action_id);

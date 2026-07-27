@@ -18,7 +18,8 @@
     "dev": "tsx watch src/index.ts",
     "dev:ui": "npm --prefix ui start",
     "typecheck": "tsc -p tsconfig.json --noEmit && npm --prefix ui run typecheck",
-    "test": "node --import tsx --test \"test/**/*.test.ts\""
+    "test": "node --import tsx --test \"test/**/*.test.ts\"",
+    "check:docs": "node .ai-workflow/check-docs.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
