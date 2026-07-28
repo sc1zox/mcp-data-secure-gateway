@@ -41,7 +41,10 @@ export type AuditEventType =
     | 'egress_failed'
     | 'action_expired'
     | 'reference_expired'
-    | 'invariant_blocked';
+    | 'invariant_blocked'
+    | 'telegram_notified'
+    | 'telegram_delivery_failed'
+    | 'telegram_callback_rejected';
 
 export interface AuditEvent {
     eventId: string;

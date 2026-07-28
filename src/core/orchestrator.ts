@@ -339,6 +339,27 @@ export class Orchestrator {
         return this.selections.open().map((request) => this.localViews.toLocalSelectionView(request));
     }
 
+    /**
+     * Notifies whenever an action becomes `awaiting_local_approval` — freshly
+     * prepared, or returning from a parked selection. Local-only: this exists
+     * for the optional Telegram approval channel to send a notification
+     * without polling `localPendingActions()`, and it never touches anything
+     * that reaches Hermes.
+     */
+    onActionAwaitingApproval(listener: (view: LocalActionView) => void): () => void {
+        const notifyIfAwaiting = (record: ActionRecord): void => {
+            if (record.status === 'awaiting_local_approval') {
+                listener(this.localViews.toLocalActionView(record));
+            }
+        };
+        const offCreate = this.actions.onCreate(notifyIfAwaiting);
+        const offTransition = this.actions.onTransition(notifyIfAwaiting);
+        return () => {
+            offCreate();
+            offTransition();
+        };
+    }
+
     /** Releases an action. Validation and the binding-hash re-check live in `actionExecutor.ts` (invariant 12). */
     async approveAction(actionId: string, expectedBindingHash: string): Promise<LocalActionView> {
         const executing = await this.actionExecutor.approve(actionId, expectedBindingHash);

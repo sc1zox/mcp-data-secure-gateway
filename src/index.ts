@@ -3,6 +3,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { ApprovalServer } from './approval/server.js';
+import { TelegramSettingsStore } from './approval/settingsStore.js';
+import { TelegramApprovalAdapter } from './approval/telegramApproval.js';
 import { ConfigError, loadConfig, type GatewayConfig } from './config.js';
 import { EgressGuard } from './core/egress.js';
 import { Orchestrator } from './core/orchestrator.js';
@@ -71,8 +73,32 @@ async function main(): Promise<void> {
 
     const uiToken = config.approval.uiToken ?? (await ensureUiToken(dataDir));
     guard.registerSecret(uiToken);
-    const approval = new ApprovalServer(config, orchestrator, audit, uiToken, createLogger('approval'));
+
+    // Its own store, separate from `config`: these credentials are entered
+    // interactively in the portal, not checked into version control (see
+    // `.hermes/plans/telegram-approval-channel.md`).
+    const telegramSettings = new TelegramSettingsStore(dataDir);
+    await telegramSettings.load();
+    guard.registerSecret(telegramSettings.current().botToken);
+    const telegramApproval = new TelegramApprovalAdapter(
+        orchestrator,
+        audit,
+        telegramSettings,
+        createLogger('approval')
+    );
+
+    const approval = new ApprovalServer(
+        config,
+        orchestrator,
+        audit,
+        uiToken,
+        guard,
+        telegramSettings,
+        telegramApproval,
+        createLogger('approval')
+    );
     await approval.start();
+    await telegramApproval.start();
 
     // Printed to stderr so it is visible even when stdout carries MCP traffic.
     process.stderr.write(

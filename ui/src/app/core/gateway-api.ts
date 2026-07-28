@@ -10,7 +10,10 @@ import type {
     ApiReselectResponse,
     ApiSelectRequest,
     ApiSelectResponse,
-    ApiStateResponse
+    ApiStateResponse,
+    ApiTelegramApprovalStatus,
+    ApiTelegramApprovalTestResponse,
+    ApiTelegramApprovalUpdateRequest
 } from '@gateway/contract';
 import { EXPECTS_UNAUTHORIZED } from './auth';
 
@@ -50,6 +53,29 @@ export class GatewayApi {
     audit(limit = 200): Promise<ApiAuditResponse> {
         return firstValueFrom(
             this.http.get<ApiAuditResponse>('/api/audit', { params: { limit } })
+        );
+    }
+
+    telegramApproval(): Promise<ApiTelegramApprovalStatus> {
+        return firstValueFrom(
+            this.http.get<ApiTelegramApprovalStatus>('/api/telegram-approval')
+        );
+    }
+
+    updateTelegramApproval(
+        update: ApiTelegramApprovalUpdateRequest
+    ): Promise<ApiTelegramApprovalStatus> {
+        return firstValueFrom(
+            this.http.post<ApiTelegramApprovalStatus>('/api/telegram-approval', update)
+        );
+    }
+
+    testTelegramApproval(): Promise<ApiTelegramApprovalTestResponse> {
+        return firstValueFrom(
+            this.http.post<ApiTelegramApprovalTestResponse>(
+                '/api/telegram-approval/test',
+                {}
+            )
         );
     }
 

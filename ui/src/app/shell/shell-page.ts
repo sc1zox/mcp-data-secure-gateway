@@ -83,6 +83,13 @@ import { Icon } from '../shared/icon';
                 </a>
                 <a routerLink="/app/history" routerLinkActive="active" class="tab">Verlauf</a>
                 <a routerLink="/app/audit" routerLinkActive="active" class="tab">Protokoll</a>
+                <a
+                    routerLink="/app/telegram-approval"
+                    routerLinkActive="active"
+                    class="tab"
+                >
+                    Telegram
+                </a>
             </nav>
 
             @if (connection() === 'offline') {

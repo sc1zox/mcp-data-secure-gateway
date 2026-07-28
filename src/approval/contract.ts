@@ -334,7 +334,10 @@ export type ApiAuditEventType =
     | 'egress_failed'
     | 'action_expired'
     | 'reference_expired'
-    | 'invariant_blocked';
+    | 'invariant_blocked'
+    | 'telegram_notified'
+    | 'telegram_delivery_failed'
+    | 'telegram_callback_rejected';
 
 export interface ApiAuditEvent {
     eventId: string;
@@ -416,6 +419,43 @@ export interface ApiCancelSelectionRequest {
     selection_id: string;
 }
 
+// ------------------------------------------------------------ telegram approval
+
+/**
+ * Secret-free view of the Telegram approval channel. Never carries the bot
+ * token — only whether one is stored — and shows chat id and allowed user id
+ * masked, the same way a target's recipient is masked elsewhere in this file.
+ */
+export interface ApiTelegramApprovalStatus {
+    enabled: boolean;
+    /** True once bot token, chat id and allowed user id are all stored. */
+    configured: boolean;
+    botTokenSet: boolean;
+    chatIdMasked?: string;
+    allowedUserIdMasked?: string;
+    /** Whether the long-polling loop is currently running. */
+    polling: boolean;
+    /** Short, secret-free description of the last polling or delivery failure, if any. */
+    lastError?: string;
+}
+
+/**
+ * What the settings page may change. An empty or absent `botToken` means
+ * "keep the currently stored secret" — the only way to read one back out is
+ * to never send it in the first place.
+ */
+export interface ApiTelegramApprovalUpdateRequest {
+    enabled: boolean;
+    botToken?: string;
+    chatId?: string;
+    allowedUserId?: string;
+}
+
+export interface ApiTelegramApprovalTestResponse extends ApiOkResponse {
+    reachable: boolean;
+    detail?: string;
+}
+
 // --------------------------------------------------------------------- routes
 
 /**
@@ -423,6 +463,6 @@ export interface ApiCancelSelectionRequest {
  * shell for all of them and the Angular router decides from there, so the two
  * lists must agree — a route added on one side only would 404 on reload.
  */
-export const API_TAB_ROUTES = ['approvals', 'selections', 'history', 'audit'] as const;
+export const API_TAB_ROUTES = ['approvals', 'selections', 'history', 'audit', 'telegram-approval'] as const;
 
 export type ApiTabRoute = (typeof API_TAB_ROUTES)[number];

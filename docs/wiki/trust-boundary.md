@@ -9,6 +9,13 @@ vollständige, nummerierte Liste der 14 Sicherheitsinvarianten und ihre Durchset
 `README.md` (Abschnitt „Sicherheitsinvarianten und ihre Umsetzung") die maßgebliche Quelle — diese
 Seite kopiert sie nicht, sondern beschreibt nur den Mechanismus.
 
+Der optionale Telegram-Freigabekanal ist eine zusätzliche externe Grenze, aber kein Weg zu Hermes:
+Bei ausdrücklicher Aktivierung überträgt er die textliche Portalansicht an einen fest
+konfigurierten privaten Chat, jedoch keine Originaldateien, Quell-URLs oder Portal-/MCP-Tokens.
+Chat und entscheidender Benutzer werden separat fest gebunden. Dieser Kanal ist unabhängig vom
+ausgehenden Ziel `private_telegram`; Details stehen in `README.md`, Abschnitt „Optionaler
+Telegram-Freigabekanal".
+
 ## Was nach außen geht
 
 Jede Antwort an Hermes entsteht in `src/core/egress.ts` feldweise nach Whitelist: opake Referenzen,

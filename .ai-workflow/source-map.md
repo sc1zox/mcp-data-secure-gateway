@@ -11,9 +11,9 @@ Vertrauensseite:
 
 | Datei | LOC | Verantwortung | Vertrauensseite |
 | --- | --- | --- | --- |
-| `src/index.ts` | 197 | Start, Boot-Reihenfolge, registriert Geheimnisse beim `EgressGuard` | local-only |
+| `src/index.ts` | 224 | Start, Boot-Reihenfolge, registriert Geheimnisse beim `EgressGuard` | local-only |
 | `src/config.ts` | 316 | Konfiguration laden, `${VAR}`-Ersetzung gegen die Umgebung | local-only |
-| `src/core/orchestrator.ts` | 450 | Koordiniert Kollaborateure; öffentliche Signatur für Einstiegspunkt, Freigabe-Server und MCP-Oberfläche | boundary |
+| `src/core/orchestrator.ts` | 471 | Koordiniert Kollaborateure; öffentliche Signatur für Einstiegspunkt, Freigabe-Server und MCP-Oberfläche | boundary |
 | `src/core/types.ts` | 399 | `Internal*`/`Public*`-Typen, `ActionStatus`, `REDACTION_PLACEHOLDERS` | boundary |
 | `src/core/egress.ts` | 462 | Aufbau jeder Antwort an Hermes nach Whitelist; `EGRESS_NOTES`-Katalog; `EgressGuard` | boundary |
 | `src/core/limits.ts` | 24 | Zentrale Policy-Obergrenzen (Zeichen-, Anhangs-, Wartezeitgrenzen) | local-only |
@@ -41,12 +41,14 @@ Vertrauensseite:
 | `src/targets/mailTarget.ts` | 130 | SMTP-Zustellung, Anhangsgrenzen, MIME-sichere Defaults | boundary |
 | `src/targets/telegramTarget.ts` | 136 | Telegram-Zustellung | boundary |
 | `src/store/jsonlStore.ts` | 135 | Generische append-only-JSONL-Basis für die Stores unten | local-only |
-| `src/store/actionStore.ts` | 210 | Aktionsstatus, erlaubte Übergänge, `ActionImmutabilityError` (Inv. 12) | local-only |
+| `src/store/actionStore.ts` | 232 | Aktionsstatus, erlaubte Übergänge, `ActionImmutabilityError` (Inv. 12) | local-only |
 | `src/store/referenceStore.ts` | 102 | Referenz-→-Ressource-Zuordnung (Inv. 4) | local-only |
 | `src/store/selectionStore.ts` | 127 | Offene und entschiedene lokale Auswahlen (Inv. 9) | local-only |
-| `src/store/auditLog.ts` | 110 | Entscheidungsprotokoll, append-only, nie verdichtet (Inv. 14) | local-only |
-| `src/approval/server.ts` | 521 | Lokaler Freigabe-Server, ausschließlich Loopback | local-only |
-| `src/approval/contract.ts` | 428 | Importfreies Wire-Format zwischen Server und Oberfläche, von beiden TS-Projekten kompiliert | boundary |
+| `src/store/auditLog.ts` | 113 | Entscheidungsprotokoll, append-only, nie verdichtet (Inv. 14) | local-only |
+| `src/approval/server.ts` | 617 | Lokaler Freigabe-Server, ausschließlich Loopback | local-only |
+| `src/approval/contract.ts` | 468 | Importfreies Wire-Format zwischen Server und Oberfläche, von beiden TS-Projekten kompiliert | boundary |
+| `src/approval/settingsStore.ts` | 151 | Lokale 0600-Konfiguration des optionalen Telegram-Freigabekanals; API-Projektion ohne Bot-Token | local-only |
+| `src/approval/telegramApproval.ts` | 569 | Long-Polling-Benachrichtigung und gebundene Telegram-Entscheidungen ohne Originaldateien | local-only |
 | `src/util/hash.ts` | 43 | Stabile Hash-Hilfsfunktion (`stableHash`), vom Bindungs-Hash genutzt | local-only |
 | `src/util/ids.ts` | 38 | Erzeugung opaker Referenzen (Inv. 4) | boundary |
 | `src/util/log.ts` | 60 | Strukturiertes Logging | local-only |

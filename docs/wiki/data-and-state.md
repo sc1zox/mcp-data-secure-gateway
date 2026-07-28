@@ -4,10 +4,11 @@
 
 Stand: 14728fe9495cd19758e8f71e6f2704dc8fc7044e (2026-07-28)
 
-## Die fünf Dateien unter `dataDir`
+## Die Dateien unter `dataDir`
 
-Alles unter `dataDir` (Standard `data`) ist append-only und kommt ohne Datenbank aus
-(`src/store/`):
+Der persistente Zustand unter `dataDir` (Standard `data`) kommt ohne Datenbank aus. Die
+JSONL-Stores unter `src/store/` sind append-only; Token und optionale Telegram-Konfiguration sind
+kleine, restriktiv geschützte Einstellungsdateien:
 
 | Datei | Inhalt | Modul |
 | --- | --- | --- |
@@ -16,10 +17,15 @@ Alles unter `dataDir` (Standard `data`) ist append-only und kommt ohne Datenbank
 | `selections.jsonl` | offene und entschiedene lokale Auswahlen | `src/store/selectionStore.ts` |
 | `audit.jsonl` | Entscheidungsprotokoll, nie verdichtet, nie gelöscht | `src/store/auditLog.ts` |
 | `ui-token` | Token der Freigabeoberfläche | — |
+| telegram-approval.json | optionale Telegram-Freigabekonfiguration, Modus 0600 | `src/approval/settingsStore.ts` |
 
 Dieses Verzeichnis darf den Rechner nicht verlassen und ist entsprechend nicht Teil dieses
 Checkouts — siehe `.gitignore`. Details zum Inhalt jeder Datei stehen in `README.md`, Abschnitt
 „Datenhaltung".
+
+Die Telegram-API gibt das gespeicherte Bot-Token nie zurück. Das Portal erhält nur einen
+secretfreien Status mit maskierter Chat- und Benutzer-ID; ein leeres Tokenfeld behält beim
+Speichern das vorhandene Secret bei.
 
 ## Bindungs-Hash
 

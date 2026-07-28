@@ -1,5 +1,11 @@
 import { DestroyRef, Injectable, computed, effect, inject, signal } from '@angular/core';
-import type { ApiActionView, ApiHistoryEntry, ApiSelectionView, ApiStateResponse } from '@gateway/contract';
+import type {
+    ApiActionView,
+    ApiHistoryEntry,
+    ApiSelectionView,
+    ApiStateResponse,
+    ApiTelegramApprovalStatus
+} from '@gateway/contract';
 import { GatewayApi, describeApiError } from './gateway-api';
 import { Session } from './session';
 
@@ -29,6 +35,7 @@ export class GatewayState {
     private readonly _selections = signal<ApiSelectionView[]>([]);
     private readonly _history = signal<ApiHistoryEntry[]>([]);
     private readonly _serverTime = signal<string | null>(null);
+    private readonly _telegramApproval = signal<ApiTelegramApprovalStatus | null>(null);
     private readonly _connection = signal<ConnectionState>('connecting');
     private readonly _lastError = signal<string | null>(null);
 
@@ -36,6 +43,7 @@ export class GatewayState {
     readonly selections = this._selections.asReadonly();
     readonly history = this._history.asReadonly();
     readonly serverTime = this._serverTime.asReadonly();
+    readonly telegramApproval = this._telegramApproval.asReadonly();
     readonly connection = this._connection.asReadonly();
     readonly lastError = this._lastError.asReadonly();
 
@@ -106,6 +114,16 @@ export class GatewayState {
         return this._actions().find((candidate) => candidate.actionId === actionId);
     }
 
+    async refreshTelegramApproval(): Promise<ApiTelegramApprovalStatus> {
+        const status = await this.api.telegramApproval();
+        this._telegramApproval.set(status);
+        return status;
+    }
+
+    setTelegramApproval(status: ApiTelegramApprovalStatus): void {
+        this._telegramApproval.set(status);
+    }
+
     private start(): void {
         if (this.handle !== null) {
             return;
@@ -126,6 +144,7 @@ export class GatewayState {
         this._selections.set([]);
         this._history.set([]);
         this._serverTime.set(null);
+        this._telegramApproval.set(null);
         this._connection.set('connecting');
         this._lastError.set(null);
     }

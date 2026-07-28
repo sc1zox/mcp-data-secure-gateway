@@ -6,6 +6,7 @@ import { ApprovalsPage } from './approvals/approvals-page';
 import { SelectionsPage } from './selections/selections-page';
 import { HistoryPage } from './history/history-page';
 import { AuditPage } from './audit/audit-page';
+import { TelegramApprovalPage } from './telegram-approval/telegram-approval-page';
 
 /**
  * Real, bookmarkable URLs rather than hidden view state: `/login` and
@@ -53,6 +54,11 @@ export const routes: Routes = [
                 path: 'audit',
                 component: AuditPage,
                 title: 'Protokoll – Local Trust Gateway'
+            },
+            {
+                path: 'telegram-approval',
+                component: TelegramApprovalPage,
+                title: 'Telegram-Freigabe – Local Trust Gateway'
             }
         ]
     },

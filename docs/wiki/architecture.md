@@ -15,10 +15,14 @@ Der Orchestrator holt Kandidaten über `src/sources/registry.ts` (die private Qu
 Paperless über MCP), lässt sie über `src/judge/` lokal bewerten und baut jede Antwort an Hermes
 über `src/core/egress.ts` — das ist die einzige Stelle, an der Daten für Hermes geformt werden.
 Eine vorbereitete Aktion wartet danach auf eine Entscheidung in der lokalen Freigabeoberfläche
-(`src/approval/`), bevor `src/targets/registry.ts` sie tatsächlich zustellt.
+(`src/approval/`), bevor `src/targets/registry.ts` sie tatsächlich zustellt. Optional sendet
+`src/approval/telegramApproval.ts` dieselbe lokale Ansicht als Text an einen fest konfigurierten
+privaten Telegram-Chat. Ein dort zugelassener Klick führt wie der Browserweg in dieselben
+Orchestrator-Methoden und dieselbe Bindungsprüfung; der Kanal versendet keine Originaldateien.
 
-Persistenz läuft ausnahmslos über `src/store/` — Anhänge-Protokolle (append-only), keine
-Datenbank.
+Referenzen, Aktionen, Auswahlen und Audit laufen append-only über `src/store/`. Die optionale
+Telegram-Konfiguration ist davon getrennt und wird atomar durch
+`src/approval/settingsStore.ts` ersetzt. Beides kommt ohne Datenbank aus.
 
 ## Wer welche Entscheidung trifft
 
@@ -26,7 +30,8 @@ Datenbank.
   bindend.
 - **Ob etwas als Aktion gilt und welchen Status sie hat**: `src/core/orchestrator.ts`.
 - **Was Hermes zu sehen bekommt**: ausschließlich `src/core/egress.ts`.
-- **Ob eine Aktion ausgeführt wird**: die Freigabe des Nutzers in `src/approval/`, nichts sonst.
+- **Ob eine Aktion ausgeführt wird**: die Freigabe des Nutzers im Browser oder über den optionalen,
+  fest gebundenen Telegram-Kanal in `src/approval/`; beide Wege nutzen dieselbe Bindungsprüfung.
 
 ## Warum die Oberfläche ein eigenes npm-Projekt ist
 

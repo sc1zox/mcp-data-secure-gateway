@@ -6,9 +6,12 @@ import { dirname, join, resolve, sep } from 'node:path';
 import type { GatewayConfig } from '../config.js';
 import { ApprovalConflictError, UnknownActionError, type Orchestrator } from '../core/orchestrator.js';
 import { resourceBindingsOf, type ActionRecord } from '../core/types.js';
+import { EgressGuard } from '../core/egress.js';
 import type { AuditLog } from '../store/auditLog.js';
 import { safeEqual } from '../util/hash.js';
 import { createLogger, describeError, type Logger } from '../util/log.js';
+import { DefaultTelegramHttpClient, type TelegramApprovalAdapter } from './telegramApproval.js';
+import { TelegramSettingsStore, TelegramSettingsValidationError } from './settingsStore.js';
 import {
     API_TAB_ROUTES,
     type ApiAuditResponse,
@@ -17,7 +20,10 @@ import {
     type ApiOkResponse,
     type ApiReselectResponse,
     type ApiSelectResponse,
-    type ApiStateResponse
+    type ApiStateResponse,
+    type ApiTelegramApprovalStatus,
+    type ApiTelegramApprovalTestResponse,
+    type ApiTelegramApprovalUpdateRequest
 } from './contract.js';
 
 /**
@@ -56,6 +62,9 @@ export class ApprovalServer {
         private readonly orchestrator: Orchestrator,
         private readonly audit: AuditLog,
         private readonly uiToken: string,
+        private readonly guard: EgressGuard,
+        private readonly telegramSettings: TelegramSettingsStore,
+        private readonly telegramApproval: TelegramApprovalAdapter,
         logger?: Logger
     ) {
         this.log = (logger ?? createLogger('approval')).child('http');
@@ -97,11 +106,11 @@ export class ApprovalServer {
     }
 
     async stop(): Promise<void> {
-        if (!this.server) {
-            return;
+        if (this.server) {
+            await new Promise<void>((resolveClose) => this.server!.close(() => resolveClose()));
+            this.server = undefined;
         }
-        await new Promise<void>((resolveClose) => this.server!.close(() => resolveClose()));
-        this.server = undefined;
+        await this.telegramApproval.stop();
     }
 
     private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -186,6 +195,18 @@ export class ApprovalServer {
                 }
                 sendJson(res, 409, { error: describeError(error) });
             }
+            return;
+        }
+        if (req.method === 'GET' && path === '/api/telegram-approval') {
+            sendJson(res, 200, this.telegramStatus());
+            return;
+        }
+        if (req.method === 'POST' && path === '/api/telegram-approval') {
+            await this.handleTelegramUpdate(req, res);
+            return;
+        }
+        if (req.method === 'POST' && path === '/api/telegram-approval/test') {
+            await this.handleTelegramTest(res);
             return;
         }
         if (req.method === 'POST' && path === '/api/cancel-selection') {
@@ -294,6 +315,73 @@ export class ApprovalServer {
                 return;
             }
             throw error;
+        }
+    }
+
+    private telegramStatus(): ApiTelegramApprovalStatus {
+        return this.telegramSettings.toApiStatus(this.telegramApproval.status());
+    }
+
+    /**
+     * Applies a portal edit to the Telegram approval channel.
+     *
+     * The new bot token — if one was actually submitted, rather than left
+     * blank to keep the stored one — is registered with the egress guard
+     * before anything else happens, so a bug anywhere downstream that put it
+     * in a Hermes-bound payload would be caught from the moment it exists.
+     * The adapter is then restarted against the new settings; it is a no-op
+     * restart if the channel ended up disabled or still incomplete.
+     */
+    private async handleTelegramUpdate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+        const body = await readJsonBody(req);
+        const enabled = booleanField(body, 'enabled');
+        if (enabled === undefined) {
+            sendJson(res, 400, { error: 'enabled (boolean) ist erforderlich.' });
+            return;
+        }
+        const update: ApiTelegramApprovalUpdateRequest = {
+            enabled,
+            botToken: stringField(body, 'botToken'),
+            chatId: stringField(body, 'chatId'),
+            allowedUserId: stringField(body, 'allowedUserId')
+        };
+        try {
+            await this.telegramSettings.update(update);
+        } catch (error) {
+            if (error instanceof TelegramSettingsValidationError) {
+                sendJson(res, 400, { error: error.message });
+                return;
+            }
+            throw error;
+        }
+        this.guard.registerSecret(this.telegramSettings.current().botToken);
+        await this.telegramApproval.reconfigure();
+        sendJson(res, 200, this.telegramStatus());
+    }
+
+    /**
+     * Checks that the stored bot token actually reaches Telegram, without
+     * touching the polling loop or sending anything to the configured chat.
+     */
+    private async handleTelegramTest(res: ServerResponse): Promise<void> {
+        const settings = this.telegramSettings.current();
+        if (!settings.botToken) {
+            sendJson(res, 400, { error: 'Kein Bot-Token gespeichert.' });
+            return;
+        }
+        const client = new DefaultTelegramHttpClient(() => settings.botToken);
+        try {
+            await client.call('getMe', {});
+            sendJson(res, 200, {
+                ok: true,
+                reachable: true
+            } satisfies ApiTelegramApprovalTestResponse);
+        } catch (error) {
+            sendJson(res, 200, {
+                ok: true,
+                reachable: false,
+                detail: describeError(error)
+            } satisfies ApiTelegramApprovalTestResponse);
         }
     }
 
@@ -518,4 +606,12 @@ function stringField(body: unknown, field: string): string | undefined {
     }
     const value = (body as Record<string, unknown>)[field];
     return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function booleanField(body: unknown, field: string): boolean | undefined {
+    if (typeof body !== 'object' || body === null) {
+        return undefined;
+    }
+    const value = (body as Record<string, unknown>)[field];
+    return typeof value === 'boolean' ? value : undefined;
 }

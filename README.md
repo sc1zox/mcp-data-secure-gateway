@@ -14,7 +14,7 @@ Hermes  ──(abstrahierte Anfrage)──►  Local Trust Gateway
                                        │
                                        ├── private Quellen        (Paperless über MCP)
                                        ├── lokales Sprachmodell   (Qwen 3.5 9B über Ollama)
-                                       ├── lokale Freigabe        (Browser, nur Loopback)
+                                       ├── lokale Freigabe        (Browser, optional Telegram)
                                        └── erlaubte Ziele         (private_mail, private_telegram, optional dynamische Ziele)
 ```
 
@@ -49,6 +49,7 @@ Diese Systeme müssen vorhanden sein und werden von diesem Projekt **nicht** ein
 | Ollama mit Qwen 3.5 9B | lokale semantische Bewertung |
 | SMTP-Zugang | Ziel `private_mail` |
 | Telegram-Bot + Chat-ID | Ziel `private_telegram` |
+| Separater Telegram-Bot + private Chat-/Benutzer-ID (optional) | zusätzlicher Freigabekanal |
 
 Node.js ≥ 20.11 für das Gateway selbst. Der **Build der Freigabeoberfläche** braucht zusätzlich
 Node ≥ 22.22.3 (oder ≥ 24.15.0), weil Angular 22 das verlangt. Das betrifft nur `npm run build`,
@@ -130,12 +131,46 @@ läuft unter `default-src 'none'`. Angular fügt Komponentenstyles zur Laufzeit 
 ein, was `style-src 'self'` zu Recht verbietet — statt auf `'unsafe-inline'` auszuweichen, setzt
 der Server pro Auslieferung eine frische Nonce in `index.html` und in den CSP-Header.
 
-Die Reiter sind echte URLs (`/login`, `/app/freigaben` als `/app/approvals` usw.), navigiert über
-die History-API im Client — kein Framework, kein Bundler, passend zur CSP (`script-src 'self'`).
+Die Reiter sind echte URLs (`/login`, `/app/approvals`, `/app/telegram-approval` usw.), navigiert
+über die History-API im Client — kein Framework, kein Bundler, passend zur CSP
+(`script-src 'self'`).
 Zurück/Vorwärts und ein Reload auf einem Reiter funktionieren; ein Aufruf von `/app/...` ohne
 gültige Sitzung landet auf `/login?next=...` und nach der Anmeldung wieder dort, wo man losging.
 Der Server kennt dieselbe geschlossene Liste an Pfaden (`CLIENT_SHELL_PATHS` in `server.ts`) und
 liefert für jeden davon dieselbe Shell aus; alles andere bleibt 404.
+
+### Optionaler Telegram-Freigabekanal
+
+Im Reiter „Telegram“ lässt sich ein zweiter Entscheidungskanal einrichten. Er ist standardmäßig
+deaktiviert und unabhängig vom Versandziel `private_telegram`: Ein eigener Bot benachrichtigt nur
+über wartende Freigaben und führt eine erlaubte Entscheidung über denselben Orchestrator und
+denselben Bindungs-Hash aus wie das Browserportal. Er versendet keine Originaldateien und ändert
+die Konfiguration der ausgehenden Ziele nicht.
+
+Telegram ist ein externer Cloud-Dienst. Bei Aktivierung erhält der Bot die vollständige textliche
+Freigabeansicht: Quellmetadaten, Zweck, Ziel und Empfänger, Betreff und Nachrichtentext,
+Anhangsmetadaten und Prüfsummen, Textauszüge, Modellbewertung sowie bei Zusammenfassungen den
+redigierten Text. Originaldateien, Portal-/MCP-Tokens und Quell-URLs werden nicht übertragen.
+Deshalb muss der verwendete Chat privat sein. Nur die fest gespeicherte Chat-ID zusammen mit der
+fest gespeicherten Telegram-Benutzer-ID darf entscheiden.
+
+Die Einrichtung erfolgt ausschließlich im token-geschützten lokalen Portal:
+
+1. Einen separaten Bot verwenden, den kein anderer Long-Polling-Client abfragt.
+2. Bot-Token, private Chat-ID und die eigene numerische Benutzer-ID eintragen.
+3. Speichern, die Bot-Verbindung testen und den Schalter „Aktiviert“ einschalten.
+
+Der Token wird nie aus der API zurückgegeben oder erneut ins Formular eingesetzt; ein leeres
+Tokenfeld behält den gespeicherten Wert bei. Chat- und Benutzer-ID erscheinen nach dem Speichern
+nur maskiert. Die Angaben liegen ausschließlich in `telegram-approval.json` unter `dataDir` mit
+Dateimodus 0600, nicht in der versionierten Gateway-Konfiguration oder in `.env`.
+
+Der Adapter verwendet `getUpdates` mit Long Polling und registriert keinen Webhook oder öffentlich
+erreichbaren Endpunkt. „Deaktivieren“ stoppt das Polling, behält die lokalen Angaben aber für eine
+spätere Reaktivierung. Für einen vollständigen Widerruf den Bot-Token bei Telegram widerrufen und
+den gespeicherten Token im Portal ersetzen. Ausfall, unvollständige Konfiguration oder
+Deaktivierung von Telegram sperren den Browserweg nicht; Freigeben und Ablehnen bleiben dort
+weiterhin möglich.
 
 ### Anbindung der Quelle
 
@@ -474,6 +509,7 @@ Alles unter `dataDir` (Standard `./data`), bewusst ohne Datenbank und ohne nativ
 | `selections.jsonl` | offene und entschiedene lokale Auswahlen |
 | `audit.jsonl` | Entscheidungsprotokoll, wird nie verdichtet oder gelöscht |
 | `ui-token` | Token der Freigabeoberfläche |
+| `telegram-approval.json` | optionale Telegram-Freigabekonfiguration samt Bot-Token, Modus 0600 |
 
 Dieses Verzeichnis enthält die Zuordnung zwischen Referenzen und privaten Dokumenten und darf den
 Rechner nicht verlassen. `.gitignore` schließt es aus. Das Protokoll führt von beiden Textsorten

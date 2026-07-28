@@ -58,10 +58,13 @@ function planAuditDetail(plan: ActionPlan): Record<string, unknown> {
 
 /** Notified after a status change was persisted. */
 export type ActionTransitionListener = (record: ActionRecord) => void;
+/** Notified after a brand-new action was persisted. */
+export type ActionCreateListener = (record: ActionRecord) => void;
 
 export class ActionStore {
     private readonly store: JsonlStore<ActionRecord>;
     private readonly listeners = new Set<ActionTransitionListener>();
+    private readonly createListeners = new Set<ActionCreateListener>();
 
     constructor(dataDir: string, private readonly audit: AuditLog) {
         this.store = new JsonlStore<ActionRecord>(storePath(dataDir, 'actions'), (record) => record.actionId);
@@ -79,6 +82,16 @@ export class ActionStore {
     onTransition(listener: ActionTransitionListener): () => void {
         this.listeners.add(listener);
         return () => this.listeners.delete(listener);
+    }
+
+    /**
+     * Subscribes to newly prepared actions, i.e. the moment `create` persists
+     * one — before any transition has happened. Used only by the optional
+     * Telegram approval channel to notify without polling the state endpoint.
+     */
+    onCreate(listener: ActionCreateListener): () => void {
+        this.createListeners.add(listener);
+        return () => this.createListeners.delete(listener);
     }
 
     async load(): Promise<void> {
@@ -109,6 +122,15 @@ export class ActionStore {
                 expiresAt: record.expiresAt
             }
         });
+        for (const listener of this.createListeners) {
+            // Same rule as `transition`: a broken listener must not undo a
+            // creation that is already on disk, nor block the others.
+            try {
+                listener(record);
+            } catch {
+                // Intentionally ignored; notification is not part of the state.
+            }
+        }
     }
 
     get(actionId: string): ActionRecord | undefined {
