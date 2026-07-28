@@ -11,10 +11,10 @@
       "transport": {
         "kind": "stdio",
         "command": "npx",
-        "args": ["-y", "paperless-mcp"],
+        "args": ["-y", "@kjanat/paperless-mcp"],
         "env": {
           "PAPERLESS_URL": "${PAPERLESS_URL}",
-          "PAPERLESS_API_TOKEN": "${PAPERLESS_API_TOKEN}"
+          "PAPERLESS_API_KEY": "${PAPERLESS_API_TOKEN}"
         }
       },
       "tools": {

@@ -197,6 +197,27 @@ Die Werkzeugnamen sind konfigurierbar (`tools.search`, `tools.get`, `tools.downl
 Parameternamen werden aus dem vom Server gemeldeten Schema abgeleitet: der Paperless-MCP-Server
 ist eine fremde Komponente und darf seine Felder `query`, `search` oder `q` nennen.
 
+Gleiche Werkzeugnamen bedeuten aber nicht gleiche Rückgaben, und an einer Stelle ist das
+bindend: `tools.download` muss die Datei **im Werkzeugergebnis selbst** liefern. Das Gateway
+akzeptiert einen `resource`-Content-Part mit `blob`, einen `image`-, `audio`- oder
+`blob`-Part mit `data`, oder strukturiertes JSON mit einem Feld `content`, `data`, `blob`
+oder `base64` (`binaryOf` in `src/sources/mcpSourceClient.ts`). Einer Resource-URI, die erst
+über `resources/read` aufgelöst werden müsste, folgt es nicht.
+
+Ein Server, der das anders hält, fällt spät auf: Er verbindet sich, meldet alle drei
+Werkzeuge, beantwortet Suche und Metadaten korrekt — und scheitert erst bei `prepare_action`
+mit `source_unavailable` und „lieferte keine Dateidaten". Vor dem Eintragen lohnt daher ein
+Blick in die Beschreibung von `download_document`; `npm pack <paket>` und ein Blick in das
+entpackte Archiv genügen, ohne den Server auszuführen.
+
+Das in älteren Anleitungen genannte Paket `paperless-mcp` ist seit Ende 2024 auf npm
+zurückgezogen. Die Beispielkonfiguration verweist deshalb auf `@kjanat/paperless-mcp`, das
+die Datei base64-kodiert im Ergebnis liefert. Es erwartet den Token unter
+`PAPERLESS_API_KEY`; die Variable des Gateways heißt weiterhin `PAPERLESS_API_TOKEN`, die
+Zuordnung geschieht in `transport.env`. Der Weg über die Umgebung ist auch der einzig
+richtige — ein Token als Kommandozeilenargument steht in der Prozessliste jedes Nutzers,
+der `ps` aufrufen kann.
+
 Optional `sources[].webBaseUrl`: die Adresse der Paperless-Weboberfläche. Ist sie gesetzt, führt
 die Freigabeansicht neben jeder Ressource und jedem Auswahlkandidaten einen Link auf das echte
 Dokument — bei mehreren fast gleich betitelten Dokumenten ist ein Blick hinein die einzige
@@ -595,6 +616,11 @@ nicht Interna. `test/helpers.ts` stellt Quelle, Ziel und lokales Modell als Doub
   und jeder Anhang gegen Metadaten, Größe und freigegebene Prüfsumme verglichen.
 - Ein Ziel ohne Anhangsunterstützung ist im Modell vorgesehen (`supportsAttachments`), aber beide
   ausgelieferten Ziele können Anhänge, daher gibt es dafür noch keinen Nur-Text-Pfad.
+- Die Volltextsuche von Paperless zerlegt deutsche Komposita nicht. `find_resource` mit
+  „Abiturzeugnis" antwortet `not_found`, während „Abitur" dieselbe Ablage mit mehreren Treffern
+  beantwortet. Bei einer Fehlanzeige lohnt zuerst der kürzere Wortstamm, bevor Quelle oder Modell
+  verdächtigt werden. Im lokalen Log ist der Fall daran zu erkennen, dass zu der Suche gar keine
+  Modellinferenz steht: ohne Kandidaten wird das lokale Modell nicht befragt.
 
 ## Nicht Bestandteil
 
