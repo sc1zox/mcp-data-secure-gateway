@@ -54,13 +54,16 @@ import { Icon } from '../shared/icon';
             <div class="warning">
                 <ltg-icon name="alert" [size]="20" />
                 <div>
-                    <strong>Private Inhalte verlassen den Rechner.</strong>
+                    <strong>Metadaten verlassen den Rechner.</strong>
                     <p>
-                        Nach dem Aktivieren werden alle Inhalte, die in einer
-                        Portal-Freigabe sichtbar sind, an Telegram übertragen — darunter
-                        Quellmetadaten, Empfänger, Betreff, Nachrichtentext,
-                        Anhangsmetadaten und Prüfsummen, Textauszüge, Modellbewertung sowie
-                        redigierte Zusammenfassungen. Originaldateien werden nicht gesendet.
+                        Nach dem Aktivieren gehen Dokumentname, Quelle und Quellkennung,
+                        Medientyp und Größe, Zweck, Ziel und Empfänger, Anhangsnamen mit
+                        Prüfsummen sowie die Modellbewertung an Telegram. Dokumentinhalt,
+                        Textauszüge, Merkmale, Betreff und Nachrichtentext, der Text einer
+                        Zusammenfassung und Originaldateien werden nicht gesendet — und was
+                        dort nicht steht, ist dort auch nicht freigebbar: Zusammenfassungen
+                        und Sendungen mit vom Agenten verfasstem Text lassen sich in Telegram
+                        nur ablehnen.
                     </p>
                 </div>
             </div>

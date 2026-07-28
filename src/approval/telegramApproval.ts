@@ -2,6 +2,8 @@ import { randomBytes } from 'node:crypto';
 import type { AuditLog } from '../store/auditLog.js';
 import type { Orchestrator } from '../core/orchestrator.js';
 import type { LocalActionView } from '../core/localViews.js';
+import type { ResidualFinding } from '../core/egress.js';
+import { AGENT_NOTE_MARKER } from '../core/planBuilder.js';
 import { createLogger, describeError, type Logger } from '../util/log.js';
 import {
     fetchJsonBounded,
@@ -106,8 +108,8 @@ export class TelegramApprovalAdapter {
     }
 
     /**
-     * Sends the full local view as one or more Telegram messages, with the
-     * inline decision buttons on the last one. Deliberately fire-and-forget
+     * Sends the content-free notification as one or more Telegram messages,
+     * with the inline decision buttons on the last one. Deliberately fire-and-forget
      * from the caller's perspective — the orchestrator's own transition
      * listener is synchronous and must not block on a network call.
      */
@@ -147,7 +149,7 @@ export class TelegramApprovalAdapter {
                 chat_id: settings.chatId,
                 text: chunks[index],
                 disable_web_page_preview: true,
-                ...(isLast ? { reply_markup: buildKeyboard(view.actionId, token) } : {})
+                ...(isLast ? { reply_markup: buildKeyboard(view, token) } : {})
             });
             if (isLast) {
                 lastMessageId = messageIdOf(result);
@@ -158,7 +160,8 @@ export class TelegramApprovalAdapter {
             bindingHash: view.bindingHash,
             chatId: settings.chatId,
             messageId: lastMessageId,
-            expiresAt: Date.parse(view.expiresAt)
+            expiresAt: Date.parse(view.expiresAt),
+            approvable: mayApproveHere(view)
         });
         await this.audit.record('telegram_notified', {
             actionId: view.actionId,
@@ -238,6 +241,18 @@ export class TelegramApprovalAdapter {
             });
             return;
         }
+        // The absent button is a hint, not a control: callback data comes from
+        // the client. Checked before the token is consumed, so a rejected
+        // approval does not take the offered rejection down with it.
+        if (parsed.decision === 'approve' && !pending.approvable) {
+            await this.answer(callback.id, 'Diese Freigabe ist nur im Portal möglich.', true);
+            await this.audit.record('telegram_callback_rejected', {
+                actionId: pending.actionId,
+                detail: { reason: 'approval_requires_portal' }
+            });
+            return;
+        }
+
         // Single use: whatever happens next, this token cannot decide twice.
         this.pendingCallbacks.delete(parsed.token);
 
@@ -307,6 +322,8 @@ interface PendingCallback {
     chatId: string;
     messageId?: number;
     expiresAt: number;
+    /** False when no approve button was offered; callback data is client-supplied, so this is checked again. */
+    approvable: boolean;
 }
 
 const POLL_TIMEOUT_SECONDS = 25;
@@ -329,6 +346,16 @@ function renderChunks(view: LocalActionView): string[] {
     return splitIntoChunks(renderFullText(view), TELEGRAM_MESSAGE_LIMIT);
 }
 
+/**
+ * Renders the notification.
+ *
+ * Telegram is an external cloud service, so this channel carries metadata and
+ * the local model's verdict — never the content either one describes. Document
+ * excerpts, source attributes, the model's reasoning, an outgoing subject or
+ * body, a summary's characters and the residual samples all stay in the browser
+ * portal, which remains the only screen that shows what is actually released.
+ * What is left here is enough to recognise the request and to reject it.
+ */
 function renderFullText(view: LocalActionView): string {
     const lines: string[] = [];
     lines.push(
@@ -349,24 +376,9 @@ function renderFullText(view: LocalActionView): string {
                 `   Typ: ${resource.mimeType}${resource.byteSize !== undefined ? `, ${resource.byteSize} Bytes` : ''}`
             );
         }
-        if (resource.attributes) {
-            const attrs = Object.entries(resource.attributes)
-                .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`)
-                .join('; ');
-            if (attrs.length > 0) {
-                lines.push(`   Merkmale: ${attrs}`);
-            }
-        }
-        if (resource.excerpt) {
-            lines.push(`   Auszug: ${resource.excerpt}`);
-        }
         lines.push(
             `   Bewertung: Sensibilität ${resource.judgement.sensitivity}, Konfidenz ${Math.round(resource.judgement.confidence * 100)}%`
         );
-        lines.push(`   Begründung: ${resource.judgement.reasoning}`);
-        if (resource.judgement.uncertainties.length > 0) {
-            lines.push(`   Offene Punkte: ${resource.judgement.uncertainties.join('; ')}`);
-        }
         if (resource.judgement.basis) {
             lines.push(
                 `   Inhaltsgrundlage: ${basisLabel(resource.judgement.basis.kind)}, ${resource.judgement.basis.textChars} Zeichen, Inhalt geprüft: ${resource.judgement.basis.contentChecked ? 'ja' : 'nein'}`
@@ -381,14 +393,10 @@ function renderFullText(view: LocalActionView): string {
         if (view.target.dynamicRecipient) {
             lines.push('⚠️ Vom Agenten vorgeschlagener Empfänger — Adresse oben genau prüfen.');
         }
+        lines.push(`Nachricht: ${authorshipLabel(view.egress.authoredByAgent, view.egress.body)}.`);
         lines.push(
-            `Betreff: ${view.egress.subject && view.egress.subject.length > 0 ? view.egress.subject : '(kein Betreff)'}${view.egress.authoredByAgent.subject ? ' [vom Agenten verfasst]' : ''}`
+            `Umfang: Betreff ${view.egress.subject?.length ?? 0} Zeichen, Text ${view.egress.body.length} Zeichen.`
         );
-        lines.push('Text:');
-        lines.push(view.egress.body.length > 0 ? view.egress.body : '(kein Text)');
-        if (view.egress.authoredByAgent.body) {
-            lines.push('[Text vom Agenten verfasst]');
-        }
         lines.push('');
         lines.push(`Anhänge (${view.egress.attachments.length}, gesamt ${view.egress.totalBytes} Bytes):`);
         view.egress.attachments.forEach((attachment, index) => {
@@ -399,25 +407,62 @@ function renderFullText(view: LocalActionView): string {
             lines.push('Hinweis: Die Anhänge werden bei Freigabe erneut aus der Quelle gelesen und geprüft.');
         }
     } else {
-        lines.push(
-            `Zusammenfassung von ${view.summary.model}${view.summary.focus ? ` (Fokus: ${view.summary.focus})` : ''}:`
-        );
-        lines.push(`sha256: ${view.summary.sha256}, ${view.summary.chars} Zeichen`);
+        lines.push(`Zusammenfassung von ${view.summary.model}: ${view.summary.chars} Zeichen`);
+        lines.push(`sha256: ${view.summary.sha256}`);
         if (view.summary.redactions.length > 0) {
             lines.push(`Geschwärzt: ${view.summary.redactions.join(', ')}`);
         }
         if (view.summary.residuals.length > 0) {
-            lines.push('⚠️ Möglicherweise noch enthalten:');
-            view.summary.residuals.forEach((residual) => lines.push(`   ${residual.kind}: ${residual.sample}`));
+            // Categories only. A residual's `sample` is the matched text itself,
+            // which is precisely the kind of detail this channel must not carry.
+            lines.push(`⚠️ Mögliche Restangaben (${view.summary.residuals.length}): ${residualKinds(view.summary.residuals)}`);
         }
-        lines.push('');
-        lines.push('Text:');
-        lines.push(view.summary.text);
     }
 
     lines.push('');
+    lines.push(
+        mayApproveHere(view)
+            ? 'Der Nachrichtentext ist nur im Portal sichtbar.'
+            : 'Freigabe nur im Portal: der freizugebende Text wird hier nicht angezeigt. Ablehnen ist hier möglich.'
+    );
     lines.push(`Aktion: ${view.actionId}`);
     return lines.join('\n');
+}
+
+/**
+ * Whether a decision made here can be an approval.
+ *
+ * Approving means releasing exact characters a human read. Once this channel no
+ * longer shows those characters, it may only approve what carries none it could
+ * have shown: a summary never qualifies, and a send does only while the gateway
+ * itself wrote subject and body from its own template. Rejecting releases
+ * nothing and therefore stays available everywhere.
+ */
+function mayApproveHere(view: LocalActionView): boolean {
+    if (view.kind === 'summarize_resource') {
+        return false;
+    }
+    if (view.egress.authoredByAgent.subject || view.egress.authoredByAgent.body) {
+        return false;
+    }
+    // A gateway-composed body still quotes a note from Hermes verbatim under the
+    // attribution line, and `authoredByAgent` does not record that.
+    return !view.egress.body.includes(AGENT_NOTE_MARKER);
+}
+
+function authorshipLabel(authored: { subject: boolean; body: boolean }, body: string): string {
+    const subject = authored.subject ? 'Betreff vom Agenten' : 'Betreff vom Gateway';
+    if (authored.body) {
+        return `${subject}, Text vom Agenten`;
+    }
+    if (body.includes(AGENT_NOTE_MARKER)) {
+        return `${subject}, Text vom Gateway mit Hinweis des Agenten`;
+    }
+    return `${subject}, Text vom Gateway`;
+}
+
+function residualKinds(residuals: ResidualFinding[]): string {
+    return [...new Set(residuals.map((residual) => residual.kind))].join(', ');
 }
 
 function basisLabel(kind: 'fulltext' | 'excerpt' | 'none'): string {
@@ -462,13 +507,14 @@ function splitIntoChunks(text: string, limit: number): string[] {
 
 // ---------------------------------------------------------------- callbacks
 
-function buildKeyboard(actionId: string, token: string): TelegramInlineKeyboard {
+function buildKeyboard(view: LocalActionView, token: string): TelegramInlineKeyboard {
+    const reject = { text: '❌ Ablehnen', callback_data: buildCallbackData('reject', view.actionId, token) };
+    if (!mayApproveHere(view)) {
+        return { inline_keyboard: [[reject]] };
+    }
     return {
         inline_keyboard: [
-            [
-                { text: '✅ Freigeben', callback_data: buildCallbackData('approve', actionId, token) },
-                { text: '❌ Ablehnen', callback_data: buildCallbackData('reject', actionId, token) }
-            ]
+            [{ text: '✅ Freigeben', callback_data: buildCallbackData('approve', view.actionId, token) }, reject]
         ]
     };
 }

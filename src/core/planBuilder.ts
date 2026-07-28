@@ -19,6 +19,13 @@ export function buildSubject(safeLabel: string): string {
 }
 
 /**
+ * Attribution line above a note from Hermes. Named because a locally composed
+ * body carrying one is not locally written prose throughout, and a reader of the
+ * finished body — the Telegram channel among them — has no other way to tell.
+ */
+export const AGENT_NOTE_MARKER = 'Hinweis des Agenten (nicht lokal verifiziert):';
+
+/**
  * Message body, composed locally from the purpose and the label. A note from
  * Hermes is included but explicitly attributed, so the user reading the approval
  * view can tell which words came from the cloud agent.
@@ -32,7 +39,7 @@ export function buildBody(input: { safeLabel: string; purpose: string; hermesNot
         'Diese Nachricht wurde nach lokaler Freigabe durch das Local Trust Gateway versandt.'
     ];
     if (input.hermesNote) {
-        lines.push('', 'Hinweis des Agenten (nicht lokal verifiziert):', input.hermesNote);
+        lines.push('', AGENT_NOTE_MARKER, input.hermesNote);
     }
     return lines.join('\n');
 }

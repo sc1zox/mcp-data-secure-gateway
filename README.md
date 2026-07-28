@@ -147,12 +147,22 @@ deaktiviert und unabhängig vom Versandziel `private_telegram`: Ein eigener Bot 
 denselben Bindungs-Hash aus wie das Browserportal. Er versendet keine Originaldateien und ändert
 die Konfiguration der ausgehenden Ziele nicht.
 
-Telegram ist ein externer Cloud-Dienst. Bei Aktivierung erhält der Bot die vollständige textliche
-Freigabeansicht: Quellmetadaten, Zweck, Ziel und Empfänger, Betreff und Nachrichtentext,
-Anhangsmetadaten und Prüfsummen, Textauszüge, Modellbewertung sowie bei Zusammenfassungen den
-redigierten Text. Originaldateien, Portal-/MCP-Tokens und Quell-URLs werden nicht übertragen.
-Deshalb muss der verwendete Chat privat sein. Nur die fest gespeicherte Chat-ID zusammen mit der
-fest gespeicherten Telegram-Benutzer-ID darf entscheiden.
+Telegram ist ein externer Cloud-Dienst und erhält deshalb keinen Inhalt, sondern nur, woran eine
+wartende Freigabe zu erkennen ist: Dokumentname, Quelle und Quellkennung, Medientyp und Größe,
+Zweck, Ziel und Empfänger, Anhangsnamen mit Prüfsummen sowie die Modellbewertung als Sensibilität
+und Konfidenz. Textauszüge aus dem Dokument, dessen Merkmale, die Begründung des Modells, Betreff
+und Nachrichtentext einer Sendung und der Text einer Zusammenfassung bleiben im Browserportal;
+ebenso Originaldateien, Portal-/MCP-Tokens und Quell-URLs. Dokumentnamen, Zweck, Anhangsnamen und
+bei einem Ziel mit angebbarem Empfänger dessen vollständige Adresse sind selbst schon
+aussagekräftig; deshalb muss der verwendete Chat privat sein. Nur die fest gespeicherte Chat-ID
+zusammen mit der fest gespeicherten Telegram-Benutzer-ID darf entscheiden.
+
+Was hier nicht zu sehen ist, kann hier auch nicht freigegeben werden: Eine Zusammenfassung sowie
+eine Sendung mit vom Agenten verfasstem Betreff oder Text — und ebenso eine mit einem Hinweis des
+Agenten im lokal erzeugten Begleittext — bekommen in Telegram nur „Ablehnen“. Eine Freigabe dieser
+Aktionen wäre die Freigabe von Zeichen, die niemand gelesen hat; sie wird auch bei manipulierten
+Callback-Daten verweigert. Freigegeben werden sie im Portal. Eine Sendung, deren Begleittext
+vollständig lokal erzeugt wurde, bleibt hier entscheidbar.
 
 Die Einrichtung erfolgt ausschließlich im token-geschützten lokalen Portal:
 

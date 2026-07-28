@@ -16,9 +16,10 @@ Paperless über MCP), lässt sie über `src/judge/` lokal bewerten und baut jede
 über `src/core/egress.ts` — das ist die einzige Stelle, an der Daten für Hermes geformt werden.
 Eine vorbereitete Aktion wartet danach auf eine Entscheidung in der lokalen Freigabeoberfläche
 (`src/approval/`), bevor `src/targets/registry.ts` sie tatsächlich zustellt. Optional sendet
-`src/approval/telegramApproval.ts` dieselbe lokale Ansicht als Text an einen fest konfigurierten
-privaten Telegram-Chat. Ein dort zugelassener Klick führt wie der Browserweg in dieselben
-Orchestrator-Methoden und dieselbe Bindungsprüfung; der Kanal versendet keine Originaldateien.
+`src/approval/telegramApproval.ts` eine inhaltsfreie Benachrichtigung über dieselbe lokale Ansicht
+an einen fest konfigurierten privaten Telegram-Chat. Ein dort zugelassener Klick führt wie der
+Browserweg in dieselben Orchestrator-Methoden und dieselbe Bindungsprüfung; der Kanal versendet
+keine Originaldateien und gibt nichts frei, dessen Text er nicht gezeigt hat.
 
 Referenzen, Aktionen, Auswahlen und Audit laufen append-only über `src/store/`. Die optionale
 Telegram-Konfiguration ist davon getrennt und wird atomar durch
