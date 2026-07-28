@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { Judge, extractJsonObject } from '../src/judge/judge.js';
 import { LocalModelResponseError, type OllamaClient } from '../src/judge/ollamaClient.js';
-import { buildSelectionUserPrompt, createFence, SELECTION_SYSTEM_PROMPT } from '../src/judge/prompts.js';
+import {
+    buildSelectionUserPrompt,
+    createFence,
+    MAX_SELECTION_EXCERPT_CHARS,
+    SELECTION_SYSTEM_PROMPT
+} from '../src/judge/prompts.js';
 import { AuditLog } from '../src/store/auditLog.js';
 import { makeResource } from './helpers.js';
 
@@ -270,6 +275,32 @@ describe('Judge: Validierung der Modellantwort', () => {
 
         assert.match(prompt, /Inhaltsauszug: NICHT VERFÜGBAR/);
         assert.ok(prompt.includes('Einführung in Künstliche Intelligenz SS25'));
+    });
+
+    it('kappt lange Auszüge im Auswahl-Prompt und sagt, dass gekappt wurde', () => {
+        const fence = createFence();
+        const long = 'A'.repeat(MAX_SELECTION_EXCERPT_CHARS + 500);
+        const prompt = buildSelectionUserPrompt(fence, 'altklausur', 'Lernen', [
+            makeResource({ excerpt: long })
+        ]);
+
+        assert.ok(!prompt.includes('A'.repeat(MAX_SELECTION_EXCERPT_CHARS + 1)));
+        assert.ok(prompt.includes('A'.repeat(MAX_SELECTION_EXCERPT_CHARS)));
+        // The model must not read a shortened excerpt as a complete document.
+        assert.match(
+            prompt,
+            new RegExp(`Anfang, ${MAX_SELECTION_EXCERPT_CHARS} von ${long.length} Zeichen`)
+        );
+    });
+
+    it('lässt einen kurzen Auszug unangetastet und ungekennzeichnet', () => {
+        const fence = createFence();
+        const prompt = buildSelectionUserPrompt(fence, 'altklausur', 'Lernen', [
+            makeResource({ excerpt: 'Kurzer Text' })
+        ]);
+
+        assert.match(prompt, /Inhaltsauszug \(11 Zeichen\)/);
+        assert.ok(!prompt.includes('Anfang,'));
     });
 });
 

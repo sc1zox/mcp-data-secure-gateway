@@ -8,6 +8,7 @@ import { EgressGuard } from './core/egress.js';
 import { Orchestrator } from './core/orchestrator.js';
 import { Judge } from './judge/judge.js';
 import { OllamaClient } from './judge/ollamaClient.js';
+import { estimateContextBudget } from './judge/prompts.js';
 import { createHermesServer, serveHttp, serveStdio } from './mcp/hermesServer.js';
 import { SourceRegistry } from './sources/registry.js';
 import { TargetRegistry } from './targets/registry.js';
@@ -33,6 +34,25 @@ async function main(): Promise<void> {
     const { config, path: configPath } = loadConfig(process.argv[2]);
     setLogLevel(config.logLevel);
     log.info('Konfiguration geladen', { configPath });
+
+    // Said once, at boot, with numbers: a context window too small for the
+    // largest prompt this config can build fails every request that reaches the
+    // model later on, and the failure it produces reads like an unreachable
+    // endpoint rather than a configuration fault.
+    const budget = estimateContextBudget(config);
+    if (!budget.fits) {
+        log.warn(
+            'localModel.numCtx ist zu klein für die lokale Bewertung. Anfragen werden fehlschlagen, ' +
+                'weil das Modell seine Anweisungen verliert, bevor es antwortet.',
+            {
+                engsteAufgabe: budget.task,
+                geschätztePromptTokens: budget.promptTokens,
+                numPredict: budget.numPredict,
+                numCtx: budget.numCtx,
+                fehlendeTokens: budget.missing
+            }
+        );
+    }
 
     const dataDir = isAbsolute(config.dataDir) ? config.dataDir : resolve(process.cwd(), config.dataDir);
     await mkdir(dataDir, { recursive: true });

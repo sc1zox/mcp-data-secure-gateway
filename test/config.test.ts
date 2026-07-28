@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { ConfigError, parseConfig } from '../src/config.js';
+import { estimateContextBudget } from '../src/judge/prompts.js';
 import { makeConfig } from './helpers.js';
 
 describe('Konfiguration: lokale Secrets', () => {
@@ -24,6 +25,60 @@ describe('Konfiguration: lokale Secrets', () => {
             telegramSettingsKey: 'same-secret-with-at-least-thirty-two-characters'
         };
         assert.throws(() => parseConfig(raw), /unterschiedlich/);
+    });
+});
+
+describe('Konfiguration: Token-Budget', () => {
+    it('verwirft ein Ausgabebudget, das das ganze Kontextfenster belegt', () => {
+        const raw = structuredClone(makeConfig()) as unknown as Record<string, unknown>;
+        raw.localModel = {
+            ...(raw.localModel as Record<string, unknown>),
+            numCtx: 4096,
+            numPredict: 4096
+        };
+
+        assert.throws(
+            () => parseConfig(raw),
+            (error: unknown) =>
+                error instanceof ConfigError &&
+                /numPredict/.test(error.message) &&
+                /numCtx/.test(error.message)
+        );
+    });
+
+    it('lässt ein Budget zu, das dem Prompt Platz lässt', () => {
+        const raw = structuredClone(makeConfig()) as unknown as Record<string, unknown>;
+        raw.localModel = {
+            ...(raw.localModel as Record<string, unknown>),
+            numCtx: 16384,
+            numPredict: 2048
+        };
+
+        assert.equal(parseConfig(raw).localModel.numCtx, 16384);
+    });
+
+    it('erkennt ein Kontextfenster, das den Auswahl-Prompt nicht fasst', () => {
+        const tooSmall = parseConfig({
+            ...(structuredClone(makeConfig()) as unknown as Record<string, unknown>),
+            localModel: {
+                baseUrl: 'http://127.0.0.1:11434',
+                model: 'qwen3.5:9b',
+                numCtx: 4096,
+                numPredict: 2048
+            }
+        });
+        assert.equal(estimateContextBudget(tooSmall).fits, false);
+
+        const roomy = parseConfig({
+            ...(structuredClone(makeConfig()) as unknown as Record<string, unknown>),
+            localModel: {
+                baseUrl: 'http://127.0.0.1:11434',
+                model: 'qwen3.5:9b',
+                numCtx: 16384,
+                numPredict: 2048
+            }
+        });
+        assert.equal(estimateContextBudget(roomy).fits, true);
     });
 });
 

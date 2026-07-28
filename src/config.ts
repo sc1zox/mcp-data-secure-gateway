@@ -293,6 +293,16 @@ export function parseConfig(raw: unknown): GatewayConfig {
     }
     const config = result.data;
 
+    // Not a matter of taste: `numPredict` tokens are reserved out of the same
+    // window the prompt has to fit into, so a budget at or above `numCtx`
+    // leaves no room for a prompt at all and every judgement fails at runtime.
+    if (config.localModel.numPredict >= config.localModel.numCtx) {
+        throw new ConfigError(
+            `localModel.numPredict (${config.localModel.numPredict}) muss kleiner als ` +
+                `localModel.numCtx (${config.localModel.numCtx}) sein; sonst bleibt kein ` +
+                'Platz für den Prompt.'
+        );
+    }
     if (config.approval.uiToken === config.approval.telegramSettingsKey) {
         throw new ConfigError(
             'approval.uiToken und approval.telegramSettingsKey müssen unterschiedliche Secrets sein.'

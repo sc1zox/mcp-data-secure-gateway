@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { REDACTION_PLACEHOLDERS, type InternalResource } from '../core/types.js';
 import { MAX_SUMMARY_CHARS } from '../core/egress.js';
+// Type-only: `config.ts` must stay free of any runtime import from `judge/`.
+import type { GatewayConfig } from '../config.js';
 
 /**
  * Prompt construction for the local model.
@@ -17,6 +19,83 @@ import { MAX_SUMMARY_CHARS } from '../core/egress.js';
  *    candidate or lie about sensitivity; it cannot act, and a human still
  *    approves the transfer.
  */
+
+/**
+ * Per-candidate excerpt budget for the *selection* prompt only.
+ *
+ * Selection is a comparison between candidates, and telling a CV from an
+ * electricity bill takes the first paragraph, not the whole file. The egress
+ * assessment in `prepare_action` still sees the full text — that is the step
+ * that has to answer "is this really the document it claims to be", and it
+ * judges one resource rather than a list.
+ *
+ * The cap exists because the list is what makes the prompt big: `maxCandidates`
+ * excerpts land in one context window, and every one of those tokens is paid
+ * for at prompt-evaluation speed before the model emits its first character.
+ * On CPU-only inference that is the difference between a search that answers
+ * and a search that outlives the caller's timeout.
+ */
+export const MAX_SELECTION_EXCERPT_CHARS = 800;
+
+/**
+ * Whether the configured context window can hold the biggest prompt the gateway
+ * builds, plus the answer it asks for.
+ *
+ * The runtime does not refuse an oversized request. It drops the oldest tokens
+ * once the window fills, so the model loses its own instructions partway
+ * through and answers with nothing, or with something that was never valid
+ * JSON. Both surface to Hermes as `local_model_unavailable`, which points at
+ * the endpoint rather than at the two numbers that actually caused it.
+ *
+ * The estimate is deliberately generous about how much text fits in a token
+ * (German runs closer to three characters per token than four), so it reports
+ * a problem only when there genuinely is one.
+ */
+const CHARS_PER_TOKEN = 4;
+/** System prompt, query, purpose and fence markers, independent of the payload. */
+const SCAFFOLD_CHARS = 4000;
+/** Title, type, dates, mime type and attributes around one document's text. */
+const METADATA_CHARS = 250;
+
+export interface ContextBudget {
+    /** Which of the three tasks builds the largest prompt for this config. */
+    task: 'selection' | 'document';
+    promptTokens: number;
+    numPredict: number;
+    numCtx: number;
+    /** Tokens missing from the window; zero when the budget works out. */
+    missing: number;
+    fits: boolean;
+}
+
+/**
+ * Sized against the worst of the three tasks, not just the search.
+ *
+ * `find_resource` packs `maxCandidates` shortened excerpts into one prompt,
+ * while `prepare_action` and `summarize_resource` pass a single document at
+ * `summaryChars` — which at its 20000-character default is the larger of the
+ * two by some margin. A window that fits the search but not the assessment
+ * would fail exactly at the step before the send.
+ */
+export function estimateContextBudget(config: GatewayConfig): ContextBudget {
+    let selectionChars = 0;
+    let documentChars = 0;
+    for (const source of config.sources) {
+        const excerpt = Math.min(source.excerptChars, MAX_SELECTION_EXCERPT_CHARS);
+        selectionChars = Math.max(
+            selectionChars,
+            source.maxCandidates * (excerpt + METADATA_CHARS)
+        );
+        documentChars = Math.max(documentChars, source.summaryChars + METADATA_CHARS);
+    }
+    const task = documentChars > selectionChars ? 'document' : 'selection';
+    const promptTokens = Math.ceil(
+        (SCAFFOLD_CHARS + Math.max(selectionChars, documentChars)) / CHARS_PER_TOKEN
+    );
+    const { numCtx, numPredict } = config.localModel;
+    const missing = Math.max(0, promptTokens + numPredict - numCtx);
+    return { task, promptTokens, numPredict, numCtx, missing, fits: missing === 0 };
+}
 
 export interface Fenced {
     nonce: string;
@@ -126,8 +205,16 @@ export function buildSelectionUserPrompt(
             lines.push(`  ${key}: ${Array.isArray(value) ? value.join(', ') : value}`);
         }
         if (candidate.excerpt) {
-            lines.push(`  Inhaltsauszug (${candidate.excerpt.length} Zeichen):`);
-            lines.push(fence.render(`kandidat-${index + 1}-inhalt`, candidate.excerpt));
+            const excerpt = candidate.excerpt.slice(0, MAX_SELECTION_EXCERPT_CHARS);
+            // Named rather than silently cut: the rule below tells the model that
+            // a candidate it cannot read must not win, and a shortened excerpt
+            // that looks complete would quietly undermine that judgement.
+            lines.push(
+                excerpt.length < candidate.excerpt.length
+                    ? `  Inhaltsauszug (Anfang, ${excerpt.length} von ${candidate.excerpt.length} Zeichen):`
+                    : `  Inhaltsauszug (${excerpt.length} Zeichen):`
+            );
+            lines.push(fence.render(`kandidat-${index + 1}-inhalt`, excerpt));
         } else {
             // Stated rather than omitted: a missing block reads like a short
             // document, and the rule above only bites if the gap is visible.

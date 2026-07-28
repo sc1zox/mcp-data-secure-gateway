@@ -143,9 +143,95 @@ describe('OllamaClient: NDJSON-Streaming', () => {
             () => client().chatJson('s', 'u'),
             (error: unknown) =>
                 error instanceof LocalModelResponseError &&
-                /keinen Inhalt/.test(error.message) &&
+                // Nur die Länge der Überlegung darf auftauchen, nie ihr Wortlaut.
+                error.message.includes(`${thinking.length} Zeichen`) &&
                 !error.message.includes(thinking)
         );
+    });
+
+    it('nennt Denken statt Antworten als Ursache einer leeren Antwort', async () => {
+        globalThis.fetch = async () =>
+            new Response(
+                stream([
+                    '{"message":{"thinking":"lange Überlegung ohne Ergebnis"}}\n',
+                    '{"message":{"content":""},"done":true,"prompt_eval_count":3900}\n'
+                ])
+            );
+
+        await assert.rejects(
+            () => client().chatJson('s', 'u'),
+            (error: unknown) =>
+                error instanceof LocalModelResponseError &&
+                /nachgedacht/.test(error.message) &&
+                /localModel\.think/.test(error.message) &&
+                /3900 von 4096/.test(error.message)
+        );
+    });
+
+    it('meldet eine am Token-Budget abgeschnittene Antwort als solche', async () => {
+        globalThis.fetch = async () =>
+            new Response(
+                stream([
+                    '{"message":{"content":"{\\"decision\\":\\"sel"}}\n',
+                    '{"message":{"content":""},"done":true,"done_reason":"length","prompt_eval_count":2000}\n'
+                ])
+            );
+
+        await assert.rejects(
+            () => client().chatJson('s', 'u'),
+            (error: unknown) =>
+                error instanceof LocalModelResponseError &&
+                /abgeschnitten/.test(error.message) &&
+                /384 Tokens/.test(error.message)
+        );
+    });
+
+    it('gibt einen Fehlerframe des Laufzeitsystems im Klartext weiter', async () => {
+        globalThis.fetch = async () =>
+            new Response(stream(['{"error":"model requires more system memory"}\n']));
+
+        await assert.rejects(
+            () => client().chatJson('s', 'u'),
+            (error: unknown) =>
+                error instanceof LocalModelUnavailableError &&
+                /model requires more system memory/.test(error.message)
+        );
+    });
+
+    it('warnt, wenn Prompt und Token-Budget das Kontextfenster sprengen', async () => {
+        const warnings: Array<Record<string, unknown> | undefined> = [];
+        const logger = {
+            debug: () => undefined,
+            info: () => undefined,
+            warn: (_message: string, fields?: Record<string, unknown>) => warnings.push(fields),
+            error: () => undefined,
+            child: () => logger
+        };
+        globalThis.fetch = async () =>
+            new Response(
+                stream([
+                    '{"message":{"content":"{}"},"done":true,"done_reason":"stop","prompt_eval_count":3900}\n'
+                ])
+            );
+
+        const withLogger = new OllamaClient(
+            {
+                baseUrl: 'http://127.0.0.1:11434',
+                model: 'local-model',
+                idleTimeoutMs: 1000,
+                temperature: 0,
+                // 3900 Prompt-Tokens + 384 Ausgabe-Tokens passen nicht in 4096.
+                numCtx: 4096,
+                think: false,
+                numPredict: 384,
+                keepAlive: '30m'
+            } satisfies LocalModelConfig,
+            logger
+        );
+
+        assert.equal(await withLogger.chatJson('s', 'u'), '{}');
+        assert.equal(warnings.length, 1);
+        assert.equal(warnings[0]?.fehlend, 188);
     });
 
     it('bricht eine festgefahrene Headerphase nach Inaktivität ab', async () => {

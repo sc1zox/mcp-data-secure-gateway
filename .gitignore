@@ -14,3 +14,4 @@ ui/.angular/
 
 # Local tooling state
 .claude/settings.local.json
+/.idea/

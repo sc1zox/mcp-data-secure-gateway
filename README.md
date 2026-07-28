@@ -537,6 +537,35 @@ Fehlerhafte Frames, fehlendes `done`, leerer Inhalt oder ein abrupter Stream-Abb
 Ausfall des lokalen Modells. Dieses interne Streaming ändert die synchrone MCP-Oberfläche nicht
 und sendet keine Teilfortschritte an Hermes.
 
+### Kontextfenster richtig bemessen
+
+`localModel.numCtx` muss den Prompt **und** die Antwort fassen. Ollama lehnt eine zu große Anfrage
+nicht ab, sondern verwirft die ältesten Tokens, sobald das Fenster voll ist — das Modell verliert
+also mitten in der Arbeit seine eigenen Anweisungen und antwortet mit unvollständigem JSON oder
+mit gar nichts. Beides erreicht Hermes als `local_model_unavailable` und zeigt damit auf den
+Endpunkt statt auf die beiden Zahlen, die es verursacht haben.
+
+Drei Stellen halten das jetzt fest:
+
+- `localModel.numPredict` ≥ `localModel.numCtx` bricht den Start ab. Das Ausgabebudget wird aus
+  demselben Fenster reserviert; ist es so groß wie das Fenster, bleibt für den Prompt nichts übrig.
+- Beim Start schätzt das Gateway den größten Prompt, den es bauen kann — `maxCandidates` gekürzte
+  Auszüge für die Auswahl, `summaryChars` Zeichen Volltext für Bewertung und Zusammenfassung — und
+  warnt mit konkreten Zahlen, wenn er zusammen mit `numPredict` nicht ins Fenster passt.
+- Bricht das Laufzeitsystem eine Antwort am Token-Budget ab (`done_reason: length`) oder liefert
+  ein Modell mit `think: true` nur Überlegung und keine Antwort, benennt die Fehlermeldung genau
+  das, statt von ungültigem JSON zu sprechen. Der Wortlaut der Überlegung bleibt lokal; nur ihre
+  Länge wird gemeldet.
+
+Für die Auswahl wird der Inhaltsauszug je Kandidat auf 800 Zeichen gekappt und im Prompt als
+Anfang gekennzeichnet: `find_resource` legt `maxCandidates` Auszüge in ein Fenster, und jedes
+dieser Tokens wird vor dem ersten Antwortzeichen bezahlt. Die Inhaltsprüfung in `prepare_action`
+sieht weiterhin den Volltext — sie beurteilt ein Dokument, keine Liste.
+
+`think: true` kostet Fenster und Zeit: Die Überlegung zählt gegen dasselbe Budget wie die Antwort.
+Auf reiner CPU-Inferenz ist das der Unterschied zwischen einer Suche, die antwortet, und einer, die
+das Zeitlimit des Aufrufers überlebt.
+
 ## Entwicklung
 
 ```bash
