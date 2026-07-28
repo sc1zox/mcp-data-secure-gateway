@@ -66,11 +66,13 @@ export class OllamaClient {
             stream: true,
             // Ollama's /api/chat control is a top-level field. Keeping it out of
             // `options` is intentional: those are model inference parameters.
-            think: true,
+            think: this.config.think,
             format: 'json',
+            keep_alive: this.config.keepAlive,
             options: {
                 temperature: this.config.temperature,
-                num_ctx: this.config.numCtx
+                num_ctx: this.config.numCtx,
+                num_predict: this.config.numPredict
             },
             messages: [
                 { role: 'system', content: system },
@@ -89,6 +91,7 @@ export class OllamaClient {
         let content = '';
         let doneSeen = false;
         let frameCount = 0;
+        let lastMetrics: OllamaMetrics | undefined;
         try {
             while (true) {
                 const result = await this.readWithIdle(reader, controller);
@@ -111,13 +114,16 @@ export class OllamaClient {
                         content += frame.content;
                         frameCount += 1;
                         doneSeen = frame.done;
+                        if (frame.metrics) {
+                            lastMetrics = frame.metrics;
+                        }
                         if (doneSeen) {
                             if (pending.trim().length > 0) {
                                 throw new LocalModelResponseError(
                                     'Antwort des lokalen Modells enthielt Daten nach done:true.'
                                 );
                             }
-                            return await this.finishChat(reader, content, frameCount);
+                            return await this.finishChat(reader, content, frameCount, lastMetrics);
                         }
                     }
                 }
@@ -142,6 +148,9 @@ export class OllamaClient {
             content += frame.content;
             frameCount += 1;
             doneSeen = frame.done;
+            if (frame.metrics) {
+                lastMetrics = frame.metrics;
+            }
         }
         if (!doneSeen) {
             throw new LocalModelResponseError(
@@ -151,25 +160,29 @@ export class OllamaClient {
         if (content.trim().length === 0) {
             throw new LocalModelResponseError('Antwort des lokalen Modells enthielt keinen Inhalt.');
         }
-        this.log.debug('Streaming-Antwort des lokalen Modells abgeschlossen', {
-            frames: frameCount,
-            contentChars: content.length
-        });
-        return content;
+        return await this.finishChat(reader, content, frameCount, lastMetrics);
     }
 
     private async finishChat(
         reader: ReadableStreamDefaultReader<Uint8Array>,
         content: string,
-        frameCount: number
+        frameCount: number,
+        metrics?: OllamaMetrics
     ): Promise<string> {
         await reader.cancel().catch(() => undefined);
         if (content.trim().length === 0) {
             throw new LocalModelResponseError('Antwort des lokalen Modells enthielt keinen Inhalt.');
         }
-        this.log.debug('Streaming-Antwort des lokalen Modells abgeschlossen', {
+        this.log.info('Lokale Modellinferenz abgeschlossen', {
             frames: frameCount,
-            contentChars: content.length
+            contentChars: content.length,
+            promptTokens: metrics?.promptEvalCount,
+            promptSeconds: metrics?.promptEvalDuration
+                ? metrics.promptEvalDuration / 1_000_000_000
+                : undefined,
+            outputTokens: metrics?.evalCount,
+            outputSeconds: metrics?.evalDuration ? metrics.evalDuration / 1_000_000_000 : undefined,
+            totalSeconds: metrics?.totalDuration ? metrics.totalDuration / 1_000_000_000 : undefined
         });
         return content;
     }
@@ -321,7 +334,16 @@ export class OllamaClient {
     }
 }
 
-function parseFrame(line: string): { content: string; done: boolean } {
+export interface OllamaMetrics {
+    totalDuration?: number;
+    loadDuration?: number;
+    promptEvalCount?: number;
+    promptEvalDuration?: number;
+    evalCount?: number;
+    evalDuration?: number;
+}
+
+function parseFrame(line: string): { content: string; done: boolean; metrics?: OllamaMetrics } {
     let parsed: unknown;
     try {
         parsed = JSON.parse(line);
@@ -331,7 +353,16 @@ function parseFrame(line: string): { content: string; done: boolean } {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         throw new LocalModelResponseError('Antwort des lokalen Modells enthielt ein ungültiges NDJSON-Frame.');
     }
-    const frame = parsed as { message?: unknown; done?: unknown };
+    const frame = parsed as {
+        message?: unknown;
+        done?: unknown;
+        total_duration?: unknown;
+        load_duration?: unknown;
+        prompt_eval_count?: unknown;
+        prompt_eval_duration?: unknown;
+        eval_count?: unknown;
+        eval_duration?: unknown;
+    };
     if (frame.done !== undefined && typeof frame.done !== 'boolean') {
         throw new LocalModelResponseError('Antwort des lokalen Modells enthielt ein ungültiges done-Feld.');
     }
@@ -352,5 +383,23 @@ function parseFrame(line: string): { content: string; done: boolean } {
         // Thinking stays local and is deliberately neither accumulated nor logged.
         content = message.content ?? '';
     }
-    return { content, done: frame.done === true };
+
+    let metrics: OllamaMetrics | undefined;
+    if (
+        typeof frame.total_duration === 'number' ||
+        typeof frame.prompt_eval_count === 'number' ||
+        typeof frame.eval_count === 'number'
+    ) {
+        metrics = {
+            totalDuration: typeof frame.total_duration === 'number' ? frame.total_duration : undefined,
+            loadDuration: typeof frame.load_duration === 'number' ? frame.load_duration : undefined,
+            promptEvalCount: typeof frame.prompt_eval_count === 'number' ? frame.prompt_eval_count : undefined,
+            promptEvalDuration:
+                typeof frame.prompt_eval_duration === 'number' ? frame.prompt_eval_duration : undefined,
+            evalCount: typeof frame.eval_count === 'number' ? frame.eval_count : undefined,
+            evalDuration: typeof frame.eval_duration === 'number' ? frame.eval_duration : undefined
+        };
+    }
+
+    return { content, done: frame.done === true, metrics };
 }

@@ -92,7 +92,13 @@ const localModelSchema = z.object({
     /** Deterministic judgements are easier to audit. */
     temperature: z.number().min(0).max(2).default(0),
     /** Context window to request from the runtime. */
-    numCtx: z.number().int().min(2048).max(131072).default(16384)
+    numCtx: z.number().int().min(2048).max(131072).default(16384),
+    /** Whether reasoning/thinking output is requested from the model. Defaults to false. */
+    think: z.boolean().default(false),
+    /** Maximum tokens to generate per response. Defaults to 384. */
+    numPredict: z.number().int().min(1).max(8192).default(384),
+    /** Keep alive duration for Ollama model in memory. Defaults to 30m. */
+    keepAlive: z.string().default('30m')
 });
 
 const mailTargetSchema = z.object({

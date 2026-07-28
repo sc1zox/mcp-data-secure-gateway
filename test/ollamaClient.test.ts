@@ -19,7 +19,10 @@ function client(idleTimeoutMs = 100): OllamaClient {
         model: 'local-model',
         idleTimeoutMs,
         temperature: 0,
-        numCtx: 4096
+        numCtx: 4096,
+        think: false,
+        numPredict: 384,
+        keepAlive: '30m'
     } satisfies LocalModelConfig);
 }
 
@@ -86,7 +89,7 @@ describe('OllamaClient: NDJSON-Streaming', () => {
         assert.equal(cancelled, true);
     });
 
-    it('fordert Thinking an, verwirft Thinking-Frames und setzt JSON-Content zusammen', async () => {
+    it('verwirft Thinking-Frames und setzt JSON-Content zusammen', async () => {
         let requestBody: Record<string, unknown> | undefined;
         globalThis.fetch = async (_input, init) => {
             requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -95,7 +98,7 @@ describe('OllamaClient: NDJSON-Streaming', () => {
                     '{"message":{"thinking":"interne Überlegung"}}\n',
                     '{"message":{"thinking":" darf nicht ausgeleitet werden","content":"{\\"answer\\":"}}\n',
                     '{"message":{"content":"\\"ok\\"}"',
-                    '}}\n{"message":{"content":""},"done":true}\n'
+                    '}}\n{"message":{"content":""},"done":true,"prompt_eval_count":10,"eval_count":5}\n'
                 ])
             );
         };
@@ -103,7 +106,9 @@ describe('OllamaClient: NDJSON-Streaming', () => {
         assert.equal(await client().chatJson('system', 'user'), '{"answer":"ok"}');
         assert.equal(requestBody?.stream, true);
         // `think` is an Ollama /api/chat request field, not an inference option.
-        assert.equal(requestBody?.think, true);
+        assert.equal(requestBody?.think, false);
+        assert.equal(requestBody?.keep_alive, '30m');
+        assert.equal((requestBody?.options as Record<string, unknown> | undefined)?.num_predict, 384);
         assert.equal((requestBody?.options as Record<string, unknown> | undefined)?.thinking, undefined);
     });
 
