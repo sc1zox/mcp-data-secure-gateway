@@ -40,7 +40,10 @@ async function prepare(created: Harness): Promise<string> {
 }
 
 async function activeSettings(dataDir: string): Promise<TelegramSettingsStore> {
-    const store = new TelegramSettingsStore(dataDir);
+    const store = new TelegramSettingsStore(
+        dataDir,
+        'test-master-key-with-at-least-thirty-two-characters'
+    );
     await store.load();
     await store.update({
         enabled: true,

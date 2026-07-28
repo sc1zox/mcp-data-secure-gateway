@@ -420,6 +420,10 @@ describe('Konfiguration', () => {
                 }
             ],
             localModel: { baseUrl: 'http://127.0.0.1:11434', model: 'qwen3.5:9b' },
+            approval: {
+                uiToken: 'test-ui-token-with-at-least-thirty-two-characters',
+                telegramSettingsKey: 'test-telegram-key-with-at-least-thirty-two-characters'
+            },
             targets: [
                 {
                     id: 'private_mail',

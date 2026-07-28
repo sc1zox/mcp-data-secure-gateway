@@ -43,8 +43,9 @@ import { Icon } from '../shared/icon';
                 }
 
                 <p class="hint">
-                    Token aus der Startausgabe des Gateways oder aus
-                    <code>data/ui-token</code>.
+                    Token aus der Startausgabe des Gateways. Es kommt aus der
+                    Gateway-Umgebung und bleibt im Browser nur im
+                    <code>sessionStorage</code> dieses Tabs.
                 </p>
 
                 <mat-form-field appearance="outline">

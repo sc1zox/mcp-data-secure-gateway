@@ -2,6 +2,12 @@ import type { TelegramTargetConfig } from '../config.js';
 import type { TargetDescriptor } from '../core/types.js';
 import { createLogger, describeError, type Logger } from '../util/log.js';
 import {
+    fetchJsonBounded,
+    HttpInvalidJsonError,
+    HttpResponseTooLargeError,
+    HttpTimeoutError
+} from '../util/boundedHttp.js';
+import {
     TargetDeliveryError,
     maskChatId,
     type DeliveryReceipt,
@@ -20,7 +26,19 @@ export class TelegramTarget implements EgressTarget {
     readonly id: string;
     private readonly log: Logger;
 
-    constructor(private readonly config: TelegramTargetConfig, logger?: Logger) {
+    constructor(
+        private readonly config: TelegramTargetConfig,
+        logger?: Logger,
+        private readonly http: {
+            fetchImpl: typeof fetch;
+            requestTimeoutMs: number;
+            maxResponseBytes: number;
+        } = {
+            fetchImpl: fetch,
+            requestTimeoutMs: 15_000,
+            maxResponseBytes: 1024 * 1024
+        }
+    ) {
         this.id = config.id;
         this.log = (logger ?? createLogger('target')).child(config.id);
     }
@@ -100,25 +118,31 @@ export class TelegramTarget implements EgressTarget {
     private async call(method: string, form: FormData): Promise<TelegramResponse> {
         const url = `${this.config.apiBaseUrl.replace(/\/$/, '')}/bot${this.config.botToken}/${method}`;
         let response: Response;
-        try {
-            response = await fetch(url, { method: 'POST', body: form });
-        } catch (error) {
-            throw new TargetDeliveryError(`Telegram-API nicht erreichbar: ${describeError(error)}`);
-        }
         let payload: TelegramResponse;
         try {
-            payload = (await response.json()) as TelegramResponse;
+            ({ response, payload } = await fetchJsonBounded<TelegramResponse>(
+                this.http.fetchImpl,
+                url,
+                { method: 'POST', body: form },
+                {
+                    timeoutMs: this.http.requestTimeoutMs,
+                    maxResponseBytes: this.http.maxResponseBytes
+                }
+            ));
         } catch (error) {
-            throw new TargetDeliveryError(
-                `Telegram-API antwortete nicht mit JSON (HTTP ${response.status}): ${describeError(error)}`
-            );
+            if (error instanceof HttpTimeoutError) {
+                throw new TargetDeliveryError('Telegram-API: Zeitüberschreitung.');
+            }
+            if (error instanceof HttpResponseTooLargeError) {
+                throw new TargetDeliveryError('Telegram-API-Antwort war zu groß.');
+            }
+            if (error instanceof HttpInvalidJsonError) {
+                throw new TargetDeliveryError('Telegram-API antwortete nicht mit JSON.');
+            }
+            throw new TargetDeliveryError('Telegram-API nicht erreichbar.');
         }
         if (!response.ok || payload.ok !== true) {
-            throw new TargetDeliveryError(
-                `Telegram-API meldete einen Fehler (HTTP ${response.status}): ${
-                    payload.description ?? 'ohne Beschreibung'
-                }`
-            );
+            throw new TargetDeliveryError(`Telegram-API meldete einen Fehler (HTTP ${response.status}).`);
         }
         return payload;
     }

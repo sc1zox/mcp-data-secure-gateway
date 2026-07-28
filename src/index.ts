@@ -1,6 +1,4 @@
-import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
 import { ApprovalServer } from './approval/server.js';
 import { TelegramSettingsStore } from './approval/settingsStore.js';
@@ -71,15 +69,19 @@ async function main(): Promise<void> {
         createLogger('orchestrator')
     );
 
-    const uiToken = config.approval.uiToken ?? (await ensureUiToken(dataDir));
-    guard.registerSecret(uiToken);
+    const uiToken = config.approval.uiToken;
 
     // Its own store, separate from `config`: these credentials are entered
     // interactively in the portal, not checked into version control (see
     // `.hermes/plans/telegram-approval-channel.md`).
-    const telegramSettings = new TelegramSettingsStore(dataDir);
+    const telegramSettings = new TelegramSettingsStore(
+        dataDir,
+        config.approval.telegramSettingsKey
+    );
     await telegramSettings.load();
     guard.registerSecret(telegramSettings.current().botToken);
+    guard.registerSecret(telegramSettings.current().chatId);
+    guard.registerSecret(telegramSettings.current().allowedUserId);
     const telegramApproval = new TelegramApprovalAdapter(
         orchestrator,
         audit,
@@ -167,6 +169,7 @@ function registerSecrets(guard: EgressGuard, config: GatewayConfig): void {
     guard.registerSecret(config.hermesInterface.http.bearerToken);
     guard.registerSecret(config.localModel.bearerToken);
     guard.registerSecret(config.approval.uiToken);
+    guard.registerSecret(config.approval.telegramSettingsKey);
     for (const source of config.sources) {
         // The source's web address exists only for links in the local UI. It is
         // registered here so that a payload towards Hermes carrying it fails the
@@ -193,24 +196,6 @@ function registerSecrets(guard: EgressGuard, config: GatewayConfig): void {
             guard.registerSecret(target.chatId);
         }
     }
-}
-
-/**
- * Reads the approval UI token, generating one on first start. Kept in the data
- * directory rather than the config so the config file can stay in version
- * control without carrying a credential.
- */
-async function ensureUiToken(dataDir: string): Promise<string> {
-    const tokenPath = join(dataDir, 'ui-token');
-    if (existsSync(tokenPath)) {
-        const existing = (await readFile(tokenPath, 'utf8')).trim();
-        if (existing.length >= 32) {
-            return existing;
-        }
-    }
-    const token = randomBytes(24).toString('base64url');
-    await writeFile(tokenPath, `${token}\n`, { encoding: 'utf8', mode: 0o600 });
-    return token;
 }
 
 main().catch((error) => {

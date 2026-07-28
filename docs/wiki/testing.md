@@ -34,4 +34,8 @@ Modellaufrufe.
    Sicherheitsinvarianten handelt — sonst in eine passende bestehende Testdatei.
 4. `npm test` lokal ausführen, bevor die Änderung als abgeschlossen gilt.
 
+`test/ollamaClient.test.ts` prüft NDJSON-Framing, Terminalzustand und den fortschrittsbasierten
+Idle-Wächter. `test/telegramSettingsStore.test.ts` prüft AEAD-Roundtrips, strikt fail-closed
+Migration und dass die gespeicherte Datei keine Portalwerte im Klartext enthält.
+
 Quelle: `test/helpers.ts`

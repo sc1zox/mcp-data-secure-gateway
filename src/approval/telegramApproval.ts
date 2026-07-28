@@ -3,6 +3,12 @@ import type { AuditLog } from '../store/auditLog.js';
 import type { Orchestrator } from '../core/orchestrator.js';
 import type { LocalActionView } from '../core/localViews.js';
 import { createLogger, describeError, type Logger } from '../util/log.js';
+import {
+    fetchJsonBounded,
+    HttpInvalidJsonError,
+    HttpResponseTooLargeError,
+    HttpTimeoutError
+} from '../util/boundedHttp.js';
 import type { TelegramSettingsStore } from './settingsStore.js';
 
 /**
@@ -534,7 +540,16 @@ export class DefaultTelegramHttpClient implements TelegramHttpClient {
     constructor(
         private readonly botToken: () => string | undefined,
         private readonly apiBaseUrl = 'https://api.telegram.org',
-        private readonly fetchImpl: typeof fetch = fetch
+        private readonly fetchImpl: typeof fetch = fetch,
+        private readonly limits: {
+            requestTimeoutMs: number;
+            longPollHeadroomMs: number;
+            maxResponseBytes: number;
+        } = {
+            requestTimeoutMs: 15_000,
+            longPollHeadroomMs: 10_000,
+            maxResponseBytes: 1024 * 1024
+        }
     ) {}
 
     async call(method: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<TelegramApiResult> {
@@ -542,27 +557,40 @@ export class DefaultTelegramHttpClient implements TelegramHttpClient {
         if (!token) {
             throw new Error('Telegram-Bot-Token ist nicht konfiguriert.');
         }
+        const serverTimeoutSeconds =
+            method === 'getUpdates' && typeof body.timeout === 'number' ? body.timeout : 0;
+        const timeoutMs =
+            method === 'getUpdates'
+                ? serverTimeoutSeconds * 1000 + this.limits.longPollHeadroomMs
+                : this.limits.requestTimeoutMs;
         let response: Response;
-        try {
-            response = await this.fetchImpl(`${this.apiBaseUrl.replace(/\/$/, '')}/bot${token}/${method}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-                signal
-            });
-        } catch (error) {
-            throw new Error(`Telegram-API nicht erreichbar: ${describeError(error)}`);
-        }
         let payload: TelegramApiResult;
         try {
-            payload = (await response.json()) as TelegramApiResult;
+            ({ response, payload } = await fetchJsonBounded<TelegramApiResult>(
+                this.fetchImpl,
+                `${this.apiBaseUrl.replace(/\/$/, '')}/bot${token}/${method}`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                    signal
+                },
+                { timeoutMs, maxResponseBytes: this.limits.maxResponseBytes }
+            ));
         } catch (error) {
-            throw new Error(`Telegram-API antwortete nicht mit JSON (HTTP ${response.status}): ${describeError(error)}`);
+            if (error instanceof HttpTimeoutError) {
+                throw new Error(`Telegram-API: Zeitüberschreitung bei ${method}.`);
+            }
+            if (error instanceof HttpResponseTooLargeError) {
+                throw new Error(`Telegram-API-Antwort bei ${method} war zu groß.`);
+            }
+            if (error instanceof HttpInvalidJsonError) {
+                throw new Error(`Telegram-API antwortete bei ${method} nicht mit JSON.`);
+            }
+            throw new Error(`Telegram-API nicht erreichbar bei ${method}.`);
         }
         if (!response.ok || payload.ok !== true) {
-            throw new Error(
-                `Telegram-API meldete einen Fehler bei ${method} (HTTP ${response.status}): ${payload.description ?? 'ohne Beschreibung'}`
-            );
+            throw new Error(`Telegram-API meldete einen Fehler bei ${method} (HTTP ${response.status}).`);
         }
         return payload;
     }

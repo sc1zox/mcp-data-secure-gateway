@@ -22,7 +22,8 @@ Orchestrator-Methoden und dieselbe Bindungsprüfung; der Kanal versendet keine O
 
 Referenzen, Aktionen, Auswahlen und Audit laufen append-only über `src/store/`. Die optionale
 Telegram-Konfiguration ist davon getrennt und wird atomar durch
-`src/approval/settingsStore.ts` ersetzt. Beides kommt ohne Datenbank aus.
+`src/approval/settingsStore.ts` als authentifiziert verschlüsseltes AES-256-GCM-Envelope ersetzt.
+Der getrennte Master-Key stammt aus der Gateway-Umgebung. Beides kommt ohne Datenbank aus.
 
 ## Wer welche Entscheidung trifft
 

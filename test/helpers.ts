@@ -259,7 +259,13 @@ export function makeConfig(overrides: Record<string, unknown> = {}): GatewayConf
                 to: 'ich@example.org'
             }
         ],
-        approval: { actionTtlSeconds: 1800, referenceTtlSeconds: 3600, selectionTtlSeconds: 1800 },
+        approval: {
+            uiToken: 'test-ui-token-with-at-least-thirty-two-characters',
+            telegramSettingsKey: 'test-telegram-key-with-at-least-thirty-two-characters',
+            actionTtlSeconds: 1800,
+            referenceTtlSeconds: 3600,
+            selectionTtlSeconds: 1800
+        },
         ...overrides
     });
 }

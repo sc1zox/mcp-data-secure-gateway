@@ -88,21 +88,21 @@ Hot Reload und leitet `/api` an ein laufendes Gateway auf Port 8787 weiter (`ui/
 npm start
 ```
 
-Beim Start schreibt das Gateway die URL der Freigabeoberfläche samt Token nach stderr:
+`approval.uiToken` ist ein erforderliches Secret und wird in der Beispielkonfiguration über
+`${APPROVAL_UI_TOKEN}` aus der Umgebung bezogen. Beim Start schreibt das Gateway die URL der
+Freigabeoberfläche samt Token nach stderr:
 
 ```
 Freigabeoberfläche: http://127.0.0.1:8787/?token=xpq2SqnmOouQyxmMrA7Wz_pM7E3NXNuc
 ```
 
-Das Token wird beim ersten Start erzeugt und in `data/ui-token` abgelegt (Modus 0600), damit die
-Konfigurationsdatei kein Geheimnis tragen muss.
-
 Die Seite selbst lädt ohne Token — sie zeigt dann nur ein Anmeldeformular, denn sie enthält keine
 eigenen Daten. Jeder API-Aufruf dahinter verlangt weiterhin das Token: entweder einmalig über die
 obige URL (wird dabei sofort aus der Adresszeile entfernt und in die Sitzung des Browser-Tabs
-verschoben) oder durch manuelles Einfügen ins Anmeldeformular, z. B. aus `data/ui-token`. „Abmelden“
-verwirft die Sitzung wieder. Ohne gültiges Token bleiben alle `/api/*`-Aufrufe bei 401 — die
-Oberfläche ist bewusst kein offener lokaler Dienst.
+verschoben) oder durch manuelles Einfügen ins Anmeldeformular. `sessionStorage` ist nur der
+Sitzungsspeicher des Browser-Tabs; das Gateway erzeugt oder liest keine persistierte Token-Datei.
+„Abmelden“ verwirft die Sitzung wieder. Ohne gültiges Token bleiben alle `/api/*`-Aufrufe bei 401
+— die Oberfläche ist bewusst kein offener lokaler Dienst.
 
 ### Aufbau der Oberfläche
 
@@ -162,8 +162,19 @@ Die Einrichtung erfolgt ausschließlich im token-geschützten lokalen Portal:
 
 Der Token wird nie aus der API zurückgegeben oder erneut ins Formular eingesetzt; ein leeres
 Tokenfeld behält den gespeicherten Wert bei. Chat- und Benutzer-ID erscheinen nach dem Speichern
-nur maskiert. Die Angaben liegen ausschließlich in `telegram-approval.json` unter `dataDir` mit
-Dateimodus 0600, nicht in der versionierten Gateway-Konfiguration oder in `.env`.
+nur maskiert. Die Angaben liegen ausschließlich als authentifiziert verschlüsselter
+AES-256-GCM-Payload in `telegram-approval.json` unter `dataDir` mit Dateimodus 0600. Der separate,
+erforderliche Master-Key `approval.telegramSettingsKey` kommt über
+`${TELEGRAM_APPROVAL_SETTINGS_KEY}` aus der Gateway-Umgebung, liegt niemals in dieser Datei und
+wird weder an die Portal-API noch an Hermes gegeben. Salt und Nonce werden bei jedem Speichern neu
+erzeugt; `scrypt` leitet daraus und aus dem Master-Key den AES-Schlüssel ab.
+
+Beim ersten Start nach einem Upgrade wird eine vorhandene Legacy-Klartextdatei nur geladen, wenn
+sie exakt der bekannten alten Struktur entspricht; sie wird noch während des Starts atomar durch
+Ciphertext ersetzt. Unvollständige, unbekannte oder beschädigte Strukturen sowie ein falscher
+Master-Key brechen den Start ab, ohne alte Werte zu protokollieren. Vor dem Upgrade daher einen
+stabilen Master-Key setzen und sicher verwahren. Geht er verloren, müssen die Telegram-Angaben neu
+eingegeben werden.
 
 Der Adapter verwendet `getUpdates` mit Long Polling und registriert keinen Webhook oder öffentlich
 erreichbaren Endpunkt. „Deaktivieren“ stoppt das Polling, behält die lokalen Angaben aber für eine
@@ -508,13 +519,23 @@ Alles unter `dataDir` (Standard `./data`), bewusst ohne Datenbank und ohne nativ
 | `actions.jsonl` | vorbereitete und entschiedene Aktionen, samt Nachrichtentext bzw. Zusammenfassung |
 | `selections.jsonl` | offene und entschiedene lokale Auswahlen |
 | `audit.jsonl` | Entscheidungsprotokoll, wird nie verdichtet oder gelöscht |
-| `ui-token` | Token der Freigabeoberfläche |
-| `telegram-approval.json` | optionale Telegram-Freigabekonfiguration samt Bot-Token, Modus 0600 |
+| `telegram-approval.json` | AES-256-GCM-Ciphertext der portalverwalteten Telegram-Freigabekonfiguration, Modus 0600 |
 
 Dieses Verzeichnis enthält die Zuordnung zwischen Referenzen und privaten Dokumenten und darf den
 Rechner nicht verlassen. `.gitignore` schließt es aus. Das Protokoll führt von beiden Textsorten
 nur Prüfsumme und Länge: es wird nie verdichtet und nie gelöscht, und eine zweite Kopie privater
 Inhalte mit dieser Aufbewahrung wäre der falsche Ort dafür.
+
+Der Ollama-Chat läuft als NDJSON-Stream. Das Gateway sammelt lokal ausschließlich
+`message.content`, bis ein terminales `done: true` eintrifft. `localModel.idleTimeoutMs` ist kein
+Gesamtlimit für die Inferenz: Nur eine Phase ohne Verbindungsaufbau, Header oder neue Bytes wird
+nach dem konfigurierten Zeitraum abgebrochen; jeder Fortschritt setzt den Wächter zurück.
+Bei einem Upgrade muss das frühere `localModel.requestTimeoutMs` in der Konfiguration durch
+`localModel.idleTimeoutMs` ersetzt werden; der alte Schlüssel bricht den Start mit einem
+Migrationshinweis ab, statt unbemerkt verworfen oder als Gesamtlimit weiterverwendet zu werden.
+Fehlerhafte Frames, fehlendes `done`, leerer Inhalt oder ein abrupter Stream-Abbruch gelten als
+Ausfall des lokalen Modells. Dieses interne Streaming ändert die synchrone MCP-Oberfläche nicht
+und sendet keine Teilfortschritte an Hermes.
 
 ## Entwicklung
 

@@ -355,6 +355,8 @@ export class ApprovalServer {
             throw error;
         }
         this.guard.registerSecret(this.telegramSettings.current().botToken);
+        this.guard.registerSecret(this.telegramSettings.current().chatId);
+        this.guard.registerSecret(this.telegramSettings.current().allowedUserId);
         await this.telegramApproval.reconfigure();
         sendJson(res, 200, this.telegramStatus());
     }

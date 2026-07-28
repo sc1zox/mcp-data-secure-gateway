@@ -7,6 +7,7 @@ import { TelegramApprovalAdapter } from '../src/approval/telegramApproval.js';
 import type { ApiTelegramApprovalStatus } from '../src/approval/contract.js';
 
 const UI_TOKEN = 'test-ui-token-abcdefgh';
+const ENCRYPTION_KEY = 'test-master-key-with-at-least-thirty-two-characters';
 const PORT = 18790;
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 
@@ -35,12 +36,14 @@ async function bootServer(
         approval: {
             host: '127.0.0.1',
             port: PORT,
+            uiToken: 'test-ui-token-with-at-least-thirty-two-characters',
+            telegramSettingsKey: ENCRYPTION_KEY,
             actionTtlSeconds: 1800,
             referenceTtlSeconds: 3600,
             selectionTtlSeconds: 1800
         }
     });
-    const settings = new TelegramSettingsStore(created.dataDir);
+    const settings = new TelegramSettingsStore(created.dataDir, ENCRYPTION_KEY);
     await settings.load();
     const adapter = new TelegramApprovalAdapter(created.orchestrator, created.audit, settings);
     const server = new ApprovalServer(
@@ -132,6 +135,8 @@ describe('Telegram-Freigabekanal: token-gated Portal-API', () => {
             // The egress guard is the last line of defence against this secret
             // ever reaching Hermes — the portal update must have registered it.
             assert.throws(() => created.guard.assertClean({ note: secretToken }, 'test'));
+            assert.throws(() => created.guard.assertClean({ note: '123456789' }, 'test'));
+            assert.throws(() => created.guard.assertClean({ note: '987654321' }, 'test'));
 
             // A follow-up GET must be equally silent about the secret.
             const getResponse = await authed('/api/telegram-approval');

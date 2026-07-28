@@ -83,6 +83,9 @@ import { Icon } from '../shared/icon';
                         <h2>Kanal konfigurieren</h2>
                         <p class="ltg-muted">
                             Nur für einen privaten, fest zugeordneten Chat und Benutzer.
+                            Die Angaben werden lokal authentifiziert verschlüsselt.
+                            Der separate Schlüssel kommt aus der Gateway-Umgebung
+                            und wird nie an dieses Portal übertragen.
                         </p>
                     </div>
                     <mat-slide-toggle

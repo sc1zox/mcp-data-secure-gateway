@@ -45,4 +45,7 @@ Strukturmuster wie URLs, Pfade und API-Routen, und verwirft eine Antwort statt s
 Versand selbst braucht zusätzlich eine lokale Freigabe mit passendem Bindungs-Hash — siehe
 [data-and-state.md](data-and-state.md).
 
+Auch UI-Token und Master-Key der verschlüsselten Telegram-Einstellungen sind registrierte
+Geheimnisse. Der Master-Key wird weder persistiert noch an Portal oder Hermes ausgegeben.
+
 Quelle: `README.md#sicherheitsinvarianten-und-ihre-umsetzung`

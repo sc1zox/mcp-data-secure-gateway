@@ -49,6 +49,7 @@ Vertrauensseite:
 | `src/approval/contract.ts` | 468 | Importfreies Wire-Format zwischen Server und Oberfläche, von beiden TS-Projekten kompiliert | boundary |
 | `src/approval/settingsStore.ts` | 151 | Lokale 0600-Konfiguration des optionalen Telegram-Freigabekanals; API-Projektion ohne Bot-Token | local-only |
 | `src/approval/telegramApproval.ts` | 569 | Long-Polling-Benachrichtigung und gebundene Telegram-Entscheidungen ohne Originaldateien | local-only |
+| `src/util/boundedHttp.ts` | 103 | Begrenztes Lesen von JSON-HTTP-Antworten mit Abbruch, Zeit- und Größenlimit | local-only |
 | `src/util/hash.ts` | 43 | Stabile Hash-Hilfsfunktion (`stableHash`), vom Bindungs-Hash genutzt | local-only |
 | `src/util/ids.ts` | 38 | Erzeugung opaker Referenzen (Inv. 4) | boundary |
 | `src/util/log.ts` | 60 | Strukturiertes Logging | local-only |

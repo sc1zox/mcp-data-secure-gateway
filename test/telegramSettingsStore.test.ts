@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -8,6 +8,7 @@ import {
     TelegramSettingsValidationError
 } from '../src/approval/settingsStore.js';
 
+const ENCRYPTION_KEY = 'test-master-key-with-at-least-thirty-two-characters';
 const dataDirs: string[] = [];
 async function tmpDataDir(): Promise<string> {
     const dir = await mkdtemp(join(tmpdir(), 'ltg-telegram-settings-'));
@@ -22,7 +23,7 @@ after(async () => {
 
 describe('TelegramSettingsStore', () => {
     it('startet leer und deaktiviert', async () => {
-        const store = new TelegramSettingsStore(await tmpDataDir());
+        const store = new TelegramSettingsStore(await tmpDataDir(), ENCRYPTION_KEY);
         await store.load();
 
         assert.equal(store.isComplete(), false);
@@ -40,7 +41,7 @@ describe('TelegramSettingsStore', () => {
     });
 
     it('verweigert die Aktivierung ohne vollständige Angaben', async () => {
-        const store = new TelegramSettingsStore(await tmpDataDir());
+        const store = new TelegramSettingsStore(await tmpDataDir(), ENCRYPTION_KEY);
         await store.load();
 
         await assert.rejects(
@@ -52,7 +53,7 @@ describe('TelegramSettingsStore', () => {
 
     it('speichert eine vollständige Konfiguration mit Modus 0600, ohne das Secret in der API-Ansicht', async () => {
         const dataDir = await tmpDataDir();
-        const store = new TelegramSettingsStore(dataDir);
+        const store = new TelegramSettingsStore(dataDir, ENCRYPTION_KEY);
         await store.load();
 
         await store.update({
@@ -76,12 +77,18 @@ describe('TelegramSettingsStore', () => {
         const filePath = join(dataDir, 'telegram-approval.json');
         const info = await stat(filePath);
         assert.equal(info.mode & 0o777, 0o600);
-        const onDisk = JSON.parse(await readFile(filePath, 'utf8'));
-        assert.equal(onDisk.botToken, '123456:ABC-DEF-super-secret-token');
+        const diskText = await readFile(filePath, 'utf8');
+        const onDisk = JSON.parse(diskText) as Record<string, unknown>;
+        assert.equal(onDisk.version, 1);
+        assert.equal(onDisk.algorithm, 'aes-256-gcm');
+        assert.equal(typeof onDisk.ciphertext, 'string');
+        assert.equal(diskText.includes('123456:ABC-DEF-super-secret-token'), false);
+        assert.equal(diskText.includes('987654321'), false);
+        assert.equal(diskText.includes('112233445'), false);
     });
 
     it('ein leeres Token bei einem Update behält das bestehende Secret', async () => {
-        const store = new TelegramSettingsStore(await tmpDataDir());
+        const store = new TelegramSettingsStore(await tmpDataDir(), ENCRYPTION_KEY);
         await store.load();
         await store.update({
             enabled: true,
@@ -99,7 +106,7 @@ describe('TelegramSettingsStore', () => {
     });
 
     it('disable() schaltet ab, behält aber die Zugangsdaten', async () => {
-        const store = new TelegramSettingsStore(await tmpDataDir());
+        const store = new TelegramSettingsStore(await tmpDataDir(), ENCRYPTION_KEY);
         await store.load();
         await store.update({
             enabled: true,
@@ -117,7 +124,7 @@ describe('TelegramSettingsStore', () => {
     });
 
     it('clear() entfernt jede gespeicherte Zugangsdatendaten', async () => {
-        const store = new TelegramSettingsStore(await tmpDataDir());
+        const store = new TelegramSettingsStore(await tmpDataDir(), ENCRYPTION_KEY);
         await store.load();
         await store.update({
             enabled: true,
@@ -134,7 +141,7 @@ describe('TelegramSettingsStore', () => {
 
     it('lädt eine zuvor gespeicherte Konfiguration nach einem Neustart', async () => {
         const dataDir = await tmpDataDir();
-        const first = new TelegramSettingsStore(dataDir);
+        const first = new TelegramSettingsStore(dataDir, ENCRYPTION_KEY);
         await first.load();
         await first.update({
             enabled: true,
@@ -143,14 +150,90 @@ describe('TelegramSettingsStore', () => {
             allowedUserId: '666'
         });
 
-        const second = new TelegramSettingsStore(dataDir);
+        const second = new TelegramSettingsStore(dataDir, ENCRYPTION_KEY);
         await second.load();
         assert.equal(second.current().botToken, 'token-restart');
         assert.equal(second.isActive(), true);
     });
 
     it('meldet Zugriff vor dem Laden', () => {
-        const store = new TelegramSettingsStore('/tmp/unused');
+        const store = new TelegramSettingsStore('/tmp/unused', ENCRYPTION_KEY);
         assert.throws(() => store.current());
     });
+
+    it('migriert eine strikt valide Legacy-Klartextdatei atomar zu Ciphertext', async () => {
+        const dataDir = await tmpDataDir();
+        const filePath = join(dataDir, 'telegram-approval.json');
+        await writeFile(
+            filePath,
+            JSON.stringify({
+                enabled: true,
+                botToken: 'legacy-secret-token',
+                chatId: '123456',
+                allowedUserId: '654321'
+            }),
+            { mode: 0o600 }
+        );
+
+        const store = new TelegramSettingsStore(dataDir, ENCRYPTION_KEY);
+        await store.load();
+
+        assert.equal(store.current().botToken, 'legacy-secret-token');
+        const diskText = await readFile(filePath, 'utf8');
+        assert.equal(diskText.includes('legacy-secret-token'), false);
+        assert.equal(diskText.includes('123456'), false);
+        assert.equal((JSON.parse(diskText) as { version?: unknown }).version, 1);
+    });
+
+    it('verweigert eine mehrdeutige oder unvollständige Legacy-Migration', async () => {
+        const dataDir = await tmpDataDir();
+        await writeFile(
+            join(dataDir, 'telegram-approval.json'),
+            JSON.stringify({ enabled: true, botToken: 'secret', chatId: '123', extra: 'unexpected' }),
+            { mode: 0o600 }
+        );
+        const store = new TelegramSettingsStore(dataDir, ENCRYPTION_KEY);
+        await assert.rejects(() => store.load(), /Legacy/);
+    });
+
+    it('verweigert Ciphertext mit falschem Schlüssel', async () => {
+        const dataDir = await tmpDataDir();
+        const first = new TelegramSettingsStore(dataDir, ENCRYPTION_KEY);
+        await first.load();
+        await first.update({
+            enabled: true,
+            botToken: 'secret-token',
+            chatId: '123',
+            allowedUserId: '456'
+        });
+
+        const wrongKey = new TelegramSettingsStore(
+            dataDir,
+            'different-master-key-with-at-least-thirty-two-chars'
+        );
+        await assert.rejects(() => wrongKey.load(), /entschlüsselt/);
+    });
+
+    for (const operation of ['update', 'disable', 'clear'] as const) {
+        it(`veröffentlicht bei Persistenzfehler durch ${operation} keinen neuen Snapshot`, async () => {
+            const dataDir = await tmpDataDir();
+            const store = new TelegramSettingsStore(dataDir, ENCRYPTION_KEY);
+            await store.load();
+            await store.update({
+                enabled: true,
+                botToken: 'old-token',
+                chatId: '111',
+                allowedUserId: '222'
+            });
+            const oldSnapshot = { ...store.current() };
+            await rename(dataDir, `${dataDir}-unavailable`);
+
+            const attempt =
+                operation === 'update'
+                    ? store.update({ enabled: true, botToken: 'new-token', chatId: '333' })
+                    : store[operation]();
+            await assert.rejects(() => attempt);
+            assert.deepEqual(store.current(), oldSnapshot);
+        });
+    }
 });

@@ -12,6 +12,8 @@ import { createLogger, describeError, type Logger } from '../util/log.js';
 export class LocalModelUnavailableError extends Error {}
 export class LocalModelResponseError extends Error {}
 
+const MAX_PROBE_RESPONSE_BYTES = 1024 * 1024;
+
 export class OllamaClient {
     private readonly log: Logger;
 
@@ -26,8 +28,13 @@ export class OllamaClient {
     /** Verifies the endpoint answers and the configured model is present. */
     async probe(): Promise<{ reachable: boolean; modelPresent: boolean; detail?: string }> {
         try {
-            const response = await this.request('/api/tags', undefined, 'GET');
-            const payload = (await response.json()) as { models?: Array<{ name?: string }> };
+            const controller = new AbortController();
+            const response = await this.request('/api/tags', undefined, 'GET', controller);
+            const payload = await this.readJsonBounded<{ models?: Array<{ name?: string }> }>(
+                response.body,
+                controller,
+                MAX_PROBE_RESPONSE_BYTES
+            );
             const names = (payload.models ?? [])
                 .map((entry) => entry.name)
                 .filter((name): name is string => typeof name === 'string');
@@ -56,7 +63,7 @@ export class OllamaClient {
     async chatJson(system: string, user: string): Promise<string> {
         const body = {
             model: this.config.model,
-            stream: false,
+            stream: true,
             format: 'json',
             options: {
                 temperature: this.config.temperature,
@@ -67,23 +74,109 @@ export class OllamaClient {
                 { role: 'user', content: user }
             ]
         };
-        const response = await this.request('/api/chat', body, 'POST');
-        let payload: unknown;
+        const controller = new AbortController();
+        const response = await this.request('/api/chat', body, 'POST', controller);
+        if (!response.body) {
+            throw new LocalModelResponseError('Antwort des lokalen Modells enthielt keinen Stream.');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let pending = '';
+        let content = '';
+        let doneSeen = false;
+        let frameCount = 0;
         try {
-            payload = await response.json();
+            while (true) {
+                const result = await this.readWithIdle(reader, controller);
+                if (result.done) {
+                    pending += decoder.decode();
+                    break;
+                }
+                pending += decoder.decode(result.value, { stream: true });
+                let newline: number;
+                while ((newline = pending.indexOf('\n')) >= 0) {
+                    const line = pending.slice(0, newline).trim();
+                    pending = pending.slice(newline + 1);
+                    if (line.length > 0) {
+                        const frame = parseFrame(line);
+                        if (doneSeen) {
+                            throw new LocalModelResponseError(
+                                'Antwort des lokalen Modells enthielt Daten nach done:true.'
+                            );
+                        }
+                        content += frame.content;
+                        frameCount += 1;
+                        doneSeen = frame.done;
+                        if (doneSeen) {
+                            if (pending.trim().length > 0) {
+                                throw new LocalModelResponseError(
+                                    'Antwort des lokalen Modells enthielt Daten nach done:true.'
+                                );
+                            }
+                            return await this.finishChat(reader, content, frameCount);
+                        }
+                    }
+                }
+            }
         } catch (error) {
-            throw new LocalModelResponseError(
-                `Antwort des lokalen Modells war kein JSON: ${describeError(error)}`
+            await reader.cancel().catch(() => undefined);
+            if (error instanceof LocalModelResponseError || error instanceof LocalModelUnavailableError) {
+                throw error;
+            }
+            throw new LocalModelUnavailableError(
+                `Stream des lokalen Modells wurde abrupt beendet: ${describeError(error)}`
             );
         }
-        const content = (payload as { message?: { content?: unknown } }).message?.content;
-        if (typeof content !== 'string' || content.trim().length === 0) {
+        const tail = pending.trim();
+        if (tail.length > 0) {
+            const frame = parseFrame(tail);
+            if (doneSeen) {
+                throw new LocalModelResponseError(
+                    'Antwort des lokalen Modells enthielt Daten nach done:true.'
+                );
+            }
+            content += frame.content;
+            frameCount += 1;
+            doneSeen = frame.done;
+        }
+        if (!doneSeen) {
+            throw new LocalModelResponseError(
+                'Antwort des lokalen Modells endete ohne terminales done:true.'
+            );
+        }
+        if (content.trim().length === 0) {
             throw new LocalModelResponseError('Antwort des lokalen Modells enthielt keinen Inhalt.');
         }
+        this.log.debug('Streaming-Antwort des lokalen Modells abgeschlossen', {
+            frames: frameCount,
+            contentChars: content.length
+        });
         return content;
     }
 
-    private async request(path: string, body: unknown, method: 'GET' | 'POST'): Promise<Response> {
+    private async finishChat(
+        reader: ReadableStreamDefaultReader<Uint8Array>,
+        content: string,
+        frameCount: number
+    ): Promise<string> {
+        await reader.cancel().catch(() => undefined);
+        if (content.trim().length === 0) {
+            throw new LocalModelResponseError('Antwort des lokalen Modells enthielt keinen Inhalt.');
+        }
+        this.log.debug('Streaming-Antwort des lokalen Modells abgeschlossen', {
+            frames: frameCount,
+            contentChars: content.length
+        });
+        return content;
+    }
+
+    private async request(
+        path: string,
+        body: unknown,
+        method: 'GET' | 'POST',
+        suppliedController?: AbortController
+    ): Promise<Response> {
         const url = new URL(path, this.config.baseUrl).toString();
         const headers: Record<string, string> = { Accept: 'application/json' };
         if (body !== undefined) {
@@ -93,36 +186,162 @@ export class OllamaClient {
             headers.Authorization = `Bearer ${this.config.bearerToken}`;
         }
 
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
+        const controller = suppliedController ?? new AbortController();
         let response: Response;
         try {
-            response = await fetch(url, {
-                method,
-                headers,
-                body: body === undefined ? undefined : JSON.stringify(body),
-                signal: controller.signal
-            });
+            response = await this.withIdle(
+                fetch(url, {
+                    method,
+                    headers,
+                    body: body === undefined ? undefined : JSON.stringify(body),
+                    signal: controller.signal
+                }),
+                controller
+            );
         } catch (error) {
             const reason =
                 error instanceof Error && error.name === 'AbortError'
-                    ? `Zeitüberschreitung nach ${this.config.requestTimeoutMs} ms`
+                    ? `keine Aktivität für ${this.config.idleTimeoutMs} ms`
                     : describeError(error);
             throw new LocalModelUnavailableError(`Lokales Modell nicht erreichbar (${url}): ${reason}`);
-        } finally {
-            clearTimeout(timeout);
         }
 
         if (!response.ok) {
-            const detail = await response.text().catch(() => '');
+            await this.discardBounded(response.body, controller);
             // 4xx from the runtime usually means a bad model name, which is a
             // configuration fault, but it is still an unavailable local model as
             // far as the caller's decision is concerned.
             throw new LocalModelUnavailableError(
-                `Lokales Modell antwortete mit HTTP ${response.status}: ${detail.slice(0, 300)}`
+                `Lokales Modell antwortete mit HTTP ${response.status}.`
             );
         }
         this.log.debug('Anfrage an lokales Modell abgeschlossen', { path });
         return response;
     }
+
+    private async readWithIdle(
+        reader: ReadableStreamDefaultReader<Uint8Array>,
+        controller: AbortController
+    ): Promise<Awaited<ReturnType<typeof reader.read>>> {
+        try {
+            return await this.withIdle(reader.read(), controller);
+        } catch (error) {
+            if (error instanceof Error && error.name === 'AbortError') {
+                throw new LocalModelUnavailableError(
+                    `Lokales Modell lieferte ${this.config.idleTimeoutMs} ms lang keinen Fortschritt.`
+                );
+            }
+            throw error;
+        }
+    }
+
+    private async withIdle<T>(operation: Promise<T>, controller: AbortController): Promise<T> {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const idle = new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+                controller.abort();
+                reject(new DOMException('idle watchdog expired', 'AbortError'));
+            }, this.config.idleTimeoutMs);
+        });
+        try {
+            return await Promise.race([operation, idle]);
+        } finally {
+            if (timer) {
+                clearTimeout(timer);
+            }
+        }
+    }
+
+    private async discardBounded(
+        body: ReadableStream<Uint8Array> | null,
+        controller: AbortController
+    ): Promise<void> {
+        if (!body) {
+            return;
+        }
+        const reader = body.getReader();
+        let bytes = 0;
+        try {
+            while (bytes < 4096) {
+                const result = await this.readWithIdle(reader, controller);
+                if (result.done) {
+                    return;
+                }
+                bytes += result.value.byteLength;
+            }
+        } catch {
+            // The status code is sufficient and safe diagnostic information.
+        } finally {
+            await reader.cancel().catch(() => undefined);
+        }
+    }
+
+    private async readJsonBounded<T>(
+        body: ReadableStream<Uint8Array> | null,
+        controller: AbortController,
+        maxBytes: number
+    ): Promise<T> {
+        if (!body) {
+            throw new LocalModelResponseError('Antwort des lokalen Modells enthielt keinen Body.');
+        }
+        const reader = body.getReader();
+        const chunks: Uint8Array[] = [];
+        let length = 0;
+        try {
+            while (true) {
+                const result = await this.readWithIdle(reader, controller);
+                if (result.done) {
+                    break;
+                }
+                length += result.value.byteLength;
+                if (length > maxBytes) {
+                    throw new LocalModelResponseError(
+                        `Antwort des lokalen Modells überschritt ${maxBytes} Bytes.`
+                    );
+                }
+                chunks.push(result.value);
+            }
+        } finally {
+            await reader.cancel().catch(() => undefined);
+        }
+        const bytes = new Uint8Array(length);
+        let offset = 0;
+        for (const chunk of chunks) {
+            bytes.set(chunk, offset);
+            offset += chunk.byteLength;
+        }
+        try {
+            return JSON.parse(new TextDecoder().decode(bytes)) as T;
+        } catch {
+            throw new LocalModelResponseError('Antwort des lokalen Modells war kein JSON.');
+        }
+    }
+}
+
+function parseFrame(line: string): { content: string; done: boolean } {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(line);
+    } catch {
+        throw new LocalModelResponseError('Antwort des lokalen Modells enthielt fehlerhaftes NDJSON.');
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new LocalModelResponseError('Antwort des lokalen Modells enthielt ein ungültiges NDJSON-Frame.');
+    }
+    const frame = parsed as { message?: unknown; done?: unknown };
+    if (frame.done !== undefined && typeof frame.done !== 'boolean') {
+        throw new LocalModelResponseError('Antwort des lokalen Modells enthielt ein ungültiges done-Feld.');
+    }
+    let content = '';
+    if (frame.message !== undefined) {
+        if (!frame.message || typeof frame.message !== 'object' || Array.isArray(frame.message)) {
+            throw new LocalModelResponseError('Antwort des lokalen Modells enthielt ein ungültiges message-Feld.');
+        }
+        const value = (frame.message as { content?: unknown }).content;
+        if (value !== undefined && typeof value !== 'string') {
+            throw new LocalModelResponseError('Antwort des lokalen Modells enthielt ungültigen Inhalt.');
+        }
+        content = value ?? '';
+    }
+    return { content, done: frame.done === true };
 }

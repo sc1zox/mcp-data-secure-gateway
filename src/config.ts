@@ -84,7 +84,11 @@ const localModelSchema = z.object({
     model: z.string().min(1),
     /** Optional bearer token if the endpoint sits behind auth. */
     bearerToken: z.string().optional(),
-    requestTimeoutMs: z.number().int().min(1000).max(600000).default(120000),
+    /**
+     * Maximum time without connection, headers or response bytes. This is not
+     * a total inference deadline: every stream fragment resets the watchdog.
+     */
+    idleTimeoutMs: z.number().int().min(1000).max(3_600_000).default(300000),
     /** Deterministic judgements are easier to audit. */
     temperature: z.number().min(0).max(2).default(0),
     /** Context window to request from the runtime. */
@@ -159,15 +163,20 @@ const telegramTargetSchema = z.object({
 
 const targetSchema = z.discriminatedUnion('kind', [mailTargetSchema, telegramTargetSchema]);
 
+const requiredLocalSecret = z
+    .string()
+    .min(32)
+    .max(1024)
+    .refine((value) => value === value.trim(), 'Secret darf keine äußeren Leerzeichen enthalten.');
+
 const approvalSchema = z.object({
     /** Loopback only by default: the approval UI is not a network service. */
     host: z.string().default('127.0.0.1'),
     port: z.number().int().min(1).max(65535).default(8787),
-    /**
-     * Shared secret for the local UI. Generated on first start if absent and
-     * written to the data directory, so the URL alone is not enough.
-     */
-    uiToken: z.string().optional(),
+    /** Shared secret for the local UI, supplied through an environment placeholder. */
+    uiToken: requiredLocalSecret,
+    /** Master secret for encrypted portal-managed Telegram settings. */
+    telegramSettingsKey: requiredLocalSecret,
     /** Prepared actions die if nobody decides within this window. */
     actionTtlSeconds: z.number().int().min(60).max(86400).default(1800),
     /** References expire independently; a stale ref cannot be revived. */
@@ -203,7 +212,7 @@ export const configSchema = z.object({
     sources: z.array(paperlessSourceSchema).min(1),
     localModel: localModelSchema,
     targets: z.array(targetSchema).min(1),
-    approval: approvalSchema.default({}),
+    approval: approvalSchema,
     hermesInterface: hermesInterfaceSchema.default({})
 });
 
@@ -250,6 +259,24 @@ function expandEnv(value: unknown, path: string[] = []): unknown {
 }
 
 export function parseConfig(raw: unknown): GatewayConfig {
+    if (
+        raw &&
+        typeof raw === 'object' &&
+        !Array.isArray(raw) &&
+        'localModel' in raw
+    ) {
+        const localModel = (raw as { localModel?: unknown }).localModel;
+        if (
+            localModel &&
+            typeof localModel === 'object' &&
+            !Array.isArray(localModel) &&
+            'requestTimeoutMs' in localModel
+        ) {
+            throw new ConfigError(
+                'localModel.requestTimeoutMs wird nicht mehr unterstützt; ersetzen Sie es durch localModel.idleTimeoutMs.'
+            );
+        }
+    }
     const expanded = expandEnv(raw);
     const result = configSchema.safeParse(expanded);
     if (!result.success) {
@@ -260,6 +287,11 @@ export function parseConfig(raw: unknown): GatewayConfig {
     }
     const config = result.data;
 
+    if (config.approval.uiToken === config.approval.telegramSettingsKey) {
+        throw new ConfigError(
+            'approval.uiToken und approval.telegramSettingsKey müssen unterschiedliche Secrets sein.'
+        );
+    }
     if (config.hermesInterface.transport !== 'stdio' && !config.hermesInterface.http.bearerToken) {
         throw new ConfigError(
             'hermesInterface.http.bearerToken ist zwingend erforderlich, wenn der HTTP-Transport aktiv ist.'
