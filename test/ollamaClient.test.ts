@@ -86,13 +86,15 @@ describe('OllamaClient: NDJSON-Streaming', () => {
         assert.equal(cancelled, true);
     });
 
-    it('fordert Streaming an und setzt fragmentierte NDJSON-Frames zusammen', async () => {
+    it('fordert Thinking an, verwirft Thinking-Frames und setzt JSON-Content zusammen', async () => {
         let requestBody: Record<string, unknown> | undefined;
         globalThis.fetch = async (_input, init) => {
             requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
             return new Response(
                 stream([
-                    '{"message":{"content":"{\\"answer\\":"}}\n{"message":{"content":"\\"ok\\"}"',
+                    '{"message":{"thinking":"interne Überlegung"}}\n',
+                    '{"message":{"thinking":" darf nicht ausgeleitet werden","content":"{\\"answer\\":"}}\n',
+                    '{"message":{"content":"\\"ok\\"}"',
                     '}}\n{"message":{"content":""},"done":true}\n'
                 ])
             );
@@ -100,6 +102,9 @@ describe('OllamaClient: NDJSON-Streaming', () => {
 
         assert.equal(await client().chatJson('system', 'user'), '{"answer":"ok"}');
         assert.equal(requestBody?.stream, true);
+        // `think` is an Ollama /api/chat request field, not an inference option.
+        assert.equal(requestBody?.think, true);
+        assert.equal((requestBody?.options as Record<string, unknown> | undefined)?.thinking, undefined);
     });
 
     it('verwirft fehlerhaftes NDJSON', async () => {
@@ -117,6 +122,25 @@ describe('OllamaClient: NDJSON-Streaming', () => {
     it('verwirft eine terminale Antwort ohne Inhalt', async () => {
         globalThis.fetch = async () => new Response(stream(['{"done":true}\n']));
         await assert.rejects(() => client().chatJson('s', 'u'), /keinen Inhalt/);
+    });
+
+    it('nimmt Thinking nicht in die Fehlermeldung eines inhaltslosen Streams auf', async () => {
+        const thinking = 'vertrauliche interne Überlegung';
+        globalThis.fetch = async () =>
+            new Response(
+                stream([
+                    `${JSON.stringify({ message: { thinking } })}\n`,
+                    '{"message":{"thinking":""},"done":true}\n'
+                ])
+            );
+
+        await assert.rejects(
+            () => client().chatJson('s', 'u'),
+            (error: unknown) =>
+                error instanceof LocalModelResponseError &&
+                /keinen Inhalt/.test(error.message) &&
+                !error.message.includes(thinking)
+        );
     });
 
     it('bricht eine festgefahrene Headerphase nach Inaktivität ab', async () => {

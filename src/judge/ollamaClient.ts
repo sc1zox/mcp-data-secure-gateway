@@ -64,6 +64,9 @@ export class OllamaClient {
         const body = {
             model: this.config.model,
             stream: true,
+            // Ollama's /api/chat control is a top-level field. Keeping it out of
+            // `options` is intentional: those are model inference parameters.
+            think: true,
             format: 'json',
             options: {
                 temperature: this.config.temperature,
@@ -337,11 +340,17 @@ function parseFrame(line: string): { content: string; done: boolean } {
         if (!frame.message || typeof frame.message !== 'object' || Array.isArray(frame.message)) {
             throw new LocalModelResponseError('Antwort des lokalen Modells enthielt ein ungültiges message-Feld.');
         }
-        const value = (frame.message as { content?: unknown }).content;
-        if (value !== undefined && typeof value !== 'string') {
+        const message = frame.message as { content?: unknown; thinking?: unknown };
+        if (message.thinking !== undefined && typeof message.thinking !== 'string') {
+            throw new LocalModelResponseError(
+                'Antwort des lokalen Modells enthielt ungültiges Thinking.'
+            );
+        }
+        if (message.content !== undefined && typeof message.content !== 'string') {
             throw new LocalModelResponseError('Antwort des lokalen Modells enthielt ungültigen Inhalt.');
         }
-        content = value ?? '';
+        // Thinking stays local and is deliberately neither accumulated nor logged.
+        content = message.content ?? '';
     }
     return { content, done: frame.done === true };
 }
