@@ -55,13 +55,22 @@ const summaryResponseSchema = z.object({
 });
 
 const egressResponseSchema = z.object({
-    purposeMatch: z.boolean(),
+    /**
+     * Defaulted to the cautious value rather than required.
+     *
+     * A model that leaves this out has not said the transfer is covered, and
+     * silence must not read as approval — but neither should one dropped boolean
+     * cost an action whose other attachments were already assessed. Missing
+     * becomes "not confirmed", and the omission is named in the uncertainties.
+     */
+    purposeMatch: z.boolean().default(false),
     confidence: z.number().min(0).max(1),
     sensitivity: z.enum(['low', 'medium', 'high']),
     safeLabel: z.string().optional(),
     reasoning: z.string().min(1).max(2000),
     uncertainties: z.array(z.string().max(500)).max(10).default([]),
-    recommendManualReview: z.boolean(),
+    /** Same reasoning as `purposeMatch`, in the direction that asks the user. */
+    recommendManualReview: z.boolean().default(true),
     /**
      * The model's claim that it read the document and found it to be the one the
      * title and the purpose describe. Older prompts did not ask for it, so a
@@ -69,6 +78,112 @@ const egressResponseSchema = z.object({
      */
     contentChecked: z.boolean().default(false)
 });
+
+/**
+ * The same three answers as JSON Schema, handed to the runtime as `format` so
+ * that a constrained decoder can only produce a complete object.
+ *
+ * Deliberately written out rather than derived from the schemas above, because
+ * the two say different things. This is what the gateway *asks* for: every field
+ * required, nothing else allowed. The Zod schemas are what it is willing to
+ * *accept*, and they accept an incomplete answer by filling in the cautious
+ * value — a runtime that ignores `format`, or a bare `'json'` constraint, still
+ * has to land somewhere safe. `test/judge.test.ts` holds the two in step on
+ * field names.
+ */
+const NULLABLE_INTEGER = { anyOf: [{ type: 'integer' }, { type: 'null' }] } as const;
+const SENSITIVITY = { type: 'string', enum: ['low', 'medium', 'high'] } as const;
+const UNCERTAINTIES = { type: 'array', items: { type: 'string' }, maxItems: 10 } as const;
+
+const SELECTION_RESPONSE_FORMAT = {
+    type: 'object',
+    properties: {
+        decision: { type: 'string', enum: ['select', 'ambiguous', 'none'] },
+        candidate: NULLABLE_INTEGER,
+        confidence: { type: 'number' },
+        safeLabel: { type: 'string' },
+        sensitivity: SENSITIVITY,
+        reasoning: { type: 'string' },
+        uncertainties: UNCERTAINTIES
+    },
+    required: [
+        'decision',
+        'candidate',
+        'confidence',
+        'safeLabel',
+        'sensitivity',
+        'reasoning',
+        'uncertainties'
+    ],
+    additionalProperties: false
+} as const;
+
+const EGRESS_RESPONSE_FORMAT = {
+    type: 'object',
+    // Ordered as the system prompt lists them, so the field the model commits to
+    // first is the one it is asked for first.
+    properties: {
+        contentChecked: { type: 'boolean' },
+        purposeMatch: { type: 'boolean' },
+        confidence: { type: 'number' },
+        sensitivity: SENSITIVITY,
+        safeLabel: { type: 'string' },
+        reasoning: { type: 'string' },
+        uncertainties: UNCERTAINTIES,
+        recommendManualReview: { type: 'boolean' }
+    },
+    required: [
+        'contentChecked',
+        'purposeMatch',
+        'confidence',
+        'sensitivity',
+        'safeLabel',
+        'reasoning',
+        'uncertainties',
+        'recommendManualReview'
+    ],
+    additionalProperties: false
+} as const;
+
+const SUMMARY_RESPONSE_FORMAT = {
+    type: 'object',
+    properties: {
+        summary: { type: 'string' },
+        purposeMatch: { type: 'boolean' },
+        confidence: { type: 'number' },
+        sensitivity: SENSITIVITY,
+        reasoning: { type: 'string' },
+        uncertainties: UNCERTAINTIES,
+        residualRisk: { type: 'boolean' }
+    },
+    required: [
+        'summary',
+        'purposeMatch',
+        'confidence',
+        'sensitivity',
+        'reasoning',
+        'uncertainties',
+        'residualRisk'
+    ],
+    additionalProperties: false
+} as const;
+
+/** Paired for the drift check in `test/judge.test.ts`: asked for, accepted. */
+export const RESPONSE_CONTRACTS = {
+    selection: { request: SELECTION_RESPONSE_FORMAT, accept: selectionResponseSchema },
+    egress: { request: EGRESS_RESPONSE_FORMAT, accept: egressResponseSchema },
+    summary: { request: SUMMARY_RESPONSE_FORMAT, accept: summaryResponseSchema }
+} as const;
+
+/**
+ * Fields of the egress answer that carry a cautious default, in the words the
+ * approval view uses. A defaulted field is reported as unanswered rather than
+ * quietly folded into the verdict.
+ */
+const EGRESS_DEFAULTED_FIELDS: ReadonlyArray<[keyof typeof egressResponseSchema.shape, string]> = [
+    ['purposeMatch', 'ob der Zweck den Versand deckt'],
+    ['recommendManualReview', 'ob eine manuelle Prüfung nötig ist']
+];
 
 export type SelectionOutcome =
     | {
@@ -166,10 +281,11 @@ export class Judge {
         const raw = await this.invoke(
             SELECTION_SYSTEM_PROMPT(fence.nonce),
             buildSelectionUserPrompt(fence, query, purpose, candidates),
+            SELECTION_RESPONSE_FORMAT,
             'selection',
             correlationId
         );
-        const parsed = this.parse(selectionResponseSchema, raw, 'selection', correlationId);
+        const { value: parsed } = this.parse(selectionResponseSchema, raw, 'selection', correlationId);
 
         const judgement: JudgementRecord = {
             model: this.client.model,
@@ -251,10 +367,20 @@ export class Judge {
         const raw = await this.invoke(
             EGRESS_SYSTEM_PROMPT(fence.nonce),
             buildEgressUserPrompt(fence, resource, evidence, purpose, targetLabel, targetPurpose),
+            EGRESS_RESPONSE_FORMAT,
             'egress',
             correlationId
         );
-        const parsed = this.parse(egressResponseSchema, raw, 'egress', correlationId);
+        const { value: parsed, provided } = this.parse(
+            egressResponseSchema,
+            raw,
+            'egress',
+            correlationId
+        );
+        // What the model did not answer, in the terms the user reads. The
+        // defaults below are the gateway's caution, not the model's verdict, and
+        // the difference belongs in the approval view.
+        const defaulted = EGRESS_DEFAULTED_FIELDS.filter(([field]) => !provided.has(field));
 
         const uncertainties = [...parsed.uncertainties];
         // Without text there is nothing the model could have checked, so its own
@@ -291,6 +417,15 @@ export class Judge {
         if (recommendManualReview) {
             uncertainties.unshift('Das lokale Modell empfiehlt eine genaue manuelle Prüfung.');
         }
+        // Unshifted last so it stands first: it explains why the lines below it
+        // sound like a verdict the model never actually gave.
+        if (defaulted.length > 0) {
+            uncertainties.unshift(
+                'Die Antwort des lokalen Modells war unvollständig. Es hat nicht beantwortet, ' +
+                    `${defaulted.map(([, label]) => label).join(' und ')}. Diese Punkte gelten ` +
+                    'deshalb als offen, nicht als geklärt.'
+            );
+        }
 
         const basis: JudgementBasis = {
             kind: evidence.kind,
@@ -317,6 +452,7 @@ export class Judge {
                 basis,
                 claimedContentChecked: parsed.contentChecked,
                 claimedPurposeMatch: parsed.purposeMatch,
+                defaultedFields: defaulted.map(([field]) => field),
                 purposeMatch,
                 confidence: parsed.confidence,
                 sensitivity: parsed.sensitivity,
@@ -357,10 +493,11 @@ export class Judge {
         const raw = await this.invoke(
             SUMMARY_SYSTEM_PROMPT(fence.nonce),
             buildSummaryUserPrompt(fence, resource, text, purpose, focus),
+            SUMMARY_RESPONSE_FORMAT,
             'summary',
             correlationId
         );
-        const parsed = this.parse(summaryResponseSchema, raw, 'summary', correlationId);
+        const { value: parsed } = this.parse(summaryResponseSchema, raw, 'summary', correlationId);
 
         const summary = sanitiseSummary(parsed.summary);
         // Derived from the finished text, not from a field the model filled in:
@@ -420,11 +557,12 @@ export class Judge {
     private async invoke(
         system: string,
         user: string,
+        format: unknown,
         task: string,
         correlationId: string
     ): Promise<string> {
         try {
-            return await this.client.chatJson(system, user);
+            return await this.client.chatJson(system, user, format);
         } catch (error) {
             if (error instanceof LocalModelUnavailableError) {
                 await this.audit.record('judge_unavailable', {
@@ -440,13 +578,17 @@ export class Judge {
      * Parses and validates a model response. A schema violation is not repaired
      * or retried with a nudge: an answer we cannot read is an answer we cannot
      * rely on, and the caller turns it into "no automatic action".
+     *
+     * The keys the model actually sent come back alongside the parsed value,
+     * because a schema default is indistinguishable from an answer once it has
+     * been applied — and the caller has to tell the user which of the two it is.
      */
     private parse<T extends z.ZodTypeAny>(
         schema: T,
         raw: string,
         task: string,
         correlationId: string
-    ): z.infer<T> {
+    ): { value: z.infer<T>; provided: Set<string> } {
         let payload: unknown;
         try {
             payload = JSON.parse(extractJsonObject(raw));
@@ -470,7 +612,11 @@ export class Judge {
                 `Antwort des lokalen Modells (${task}) verletzt das Schema: ${issues.join('; ')}`
             );
         }
-        return result.data;
+        const provided =
+            payload && typeof payload === 'object' && !Array.isArray(payload)
+                ? new Set(Object.keys(payload))
+                : new Set<string>();
+        return { value: result.data, provided };
     }
 
     /**

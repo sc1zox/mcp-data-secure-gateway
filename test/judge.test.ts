@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { Judge, extractJsonObject } from '../src/judge/judge.js';
+import { Judge, RESPONSE_CONTRACTS, extractJsonObject } from '../src/judge/judge.js';
 import { LocalModelResponseError, type OllamaClient } from '../src/judge/ollamaClient.js';
 import {
     buildSelectionUserPrompt,
@@ -34,19 +34,26 @@ after(async () => {
     }
 });
 
-function stubClient(response: string | (() => string)): { client: OllamaClient; prompts: string[] } {
+function stubClient(response: string | (() => string)): {
+    client: OllamaClient;
+    prompts: string[];
+    /** The `format` argument of each call, as the runtime would receive it. */
+    formats: unknown[];
+} {
     const prompts: string[] = [];
+    const formats: unknown[] = [];
     const client = {
         model: 'qwen3.5:9b',
         async probe() {
             return { reachable: true, modelPresent: true };
         },
-        async chatJson(system: string, user: string) {
+        async chatJson(system: string, user: string, format: unknown) {
             prompts.push(`${system}\n---\n${user}`);
+            formats.push(format);
             return typeof response === 'function' ? response() : response;
         }
     } as unknown as OllamaClient;
-    return { client, prompts };
+    return { client, prompts, formats };
 }
 
 describe('Judge: Validierung der Modellantwort', () => {
@@ -264,6 +271,84 @@ describe('Judge: Validierung der Modellantwort', () => {
         assert.match(assessment.judgement.uncertainties.join(' '), /kein auswertbarer Text/);
         // And the prompt said so, rather than leaving the gap to be inferred.
         assert.match(prompts[0] ?? '', /Dokumenttext: NICHT VERFÜGBAR/);
+    });
+
+    it('setzt eine unvollständige Egress-Antwort vorsichtig und sagt es dazu', async () => {
+        const audit = await makeAudit();
+        // Genau der beobachtete Fehlerfall: syntaktisch gültiges JSON, in dem das
+        // letzte Feld des Prompts fehlt.
+        const { client } = stubClient(
+            JSON.stringify({
+                contentChecked: true,
+                confidence: 0.9,
+                sensitivity: 'high',
+                reasoning: 'Der Text ist ein Bonitätszertifikat.',
+                uncertainties: []
+            })
+        );
+        const judge = new Judge(client, audit);
+
+        const assessment = await judge.assessEgress(
+            makeResource(),
+            { kind: 'fulltext', text: 'Bonitätszertifikat, ausgestellt im Juli.' },
+            'Wohnungsanfrage',
+            'Private E-Mail',
+            'Eigenes Postfach',
+            'qry_test'
+        );
+
+        // Die fehlenden Felder kosten nicht die ganze Aktion, sie fallen zur
+        // vorsichtigen Seite.
+        assert.equal(assessment.purposeMatch, false);
+        assert.equal(assessment.recommendManualReview, true);
+        // Und der Nutzer erfährt, dass das keine Aussage des Modells war.
+        assert.match(assessment.judgement.uncertainties[0] ?? '', /unvollständig/);
+        assert.match(
+            assessment.judgement.uncertainties[0] ?? '',
+            /ob der Zweck den Versand deckt und ob eine manuelle Prüfung nötig ist/
+        );
+        const invoked = (await audit.tail(20)).find((event) => event.type === 'judge_invoked');
+        assert.deepEqual((invoked?.detail as Record<string, unknown>).defaultedFields, [
+            'purposeMatch',
+            'recommendManualReview'
+        ]);
+    });
+
+    it('verlangt vom Modell jedes Feld, das später geprüft wird', () => {
+        for (const [task, contract] of Object.entries(RESPONSE_CONTRACTS)) {
+            const accepted = Object.keys(contract.accept.shape).sort();
+            const requested = Object.keys(contract.request.properties).sort();
+            // Ein Feld, das nur im Zod-Schema steht, wird nie erzwungen; eines,
+            // das nur im Format steht, wird nie geprüft. Beides ist ein Fehler.
+            assert.deepEqual(requested, accepted, task);
+            assert.deepEqual([...contract.request.required].sort(), requested, task);
+            assert.equal(contract.request.additionalProperties, false, task);
+        }
+    });
+
+    it('übergibt dem Laufzeitsystem das Schema der jeweiligen Aufgabe', async () => {
+        const audit = await makeAudit();
+        const { client, formats } = stubClient(
+            JSON.stringify({
+                contentChecked: true,
+                purposeMatch: true,
+                confidence: 0.9,
+                sensitivity: 'low',
+                reasoning: 'Passt.',
+                uncertainties: [],
+                recommendManualReview: false
+            })
+        );
+        await new Judge(client, audit).assessEgress(
+            makeResource(),
+            { kind: 'fulltext', text: 'Text.' },
+            'Ablage',
+            'Private E-Mail',
+            'Eigenes Postfach',
+            'qry_test'
+        );
+
+        assert.equal(formats[0], RESPONSE_CONTRACTS.egress.request);
     });
 
     it('markiert einen Kandidaten ohne Inhalt im Auswahl-Prompt', () => {

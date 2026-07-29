@@ -56,18 +56,20 @@ export class OllamaClient {
     /**
      * Sends a chat completion and returns the raw assistant text.
      *
-     * `format: 'json'` asks the runtime to constrain output to JSON. The caller
-     * still validates the result against a schema, because a constrained decoder
-     * guarantees syntax, not meaning.
+     * `format` constrains the runtime's decoder. A JSON Schema — what the judge
+     * passes — makes a missing field impossible rather than merely unlikely; a
+     * bare `'json'` constrains syntax alone and lets the model close the object
+     * after any field it likes. Either way the caller still validates the
+     * result, because a constrained decoder guarantees shape, not meaning.
      */
-    async chatJson(system: string, user: string): Promise<string> {
+    async chatJson(system: string, user: string, format: unknown = 'json'): Promise<string> {
         const body = {
             model: this.config.model,
             stream: true,
             // Ollama's /api/chat control is a top-level field. Keeping it out of
             // `options` is intentional: those are model inference parameters.
             think: this.config.think,
-            format: 'json',
+            format,
             keep_alive: this.config.keepAlive,
             options: {
                 temperature: this.config.temperature,
@@ -330,9 +332,15 @@ export class OllamaClient {
             await this.discardBounded(response.body, controller);
             // 4xx from the runtime usually means a bad model name, which is a
             // configuration fault, but it is still an unavailable local model as
-            // far as the caller's decision is concerned.
+            // far as the caller's decision is concerned. A 400 on the chat route
+            // has one further cause worth naming, because nothing else points at
+            // it: schema-constrained output needs Ollama 0.5 or newer.
+            const hint =
+                path === '/api/chat' && response.status === 400
+                    ? ' Ein JSON-Schema in `format` verlangt Ollama 0.5 oder neuer.'
+                    : '';
             throw new LocalModelUnavailableError(
-                `Lokales Modell antwortete mit HTTP ${response.status}.`
+                `Lokales Modell antwortete mit HTTP ${response.status}.${hint}`
             );
         }
         this.log.debug('Anfrage an lokales Modell abgeschlossen', { path });

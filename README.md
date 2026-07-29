@@ -46,7 +46,7 @@ Diese Systeme müssen vorhanden sein und werden von diesem Projekt **nicht** ein
 | --- | --- |
 | Hermes | Cloud-Agent, spricht das Gateway als MCP-Client an |
 | Paperless + Paperless-MCP-Server | erste private Quelle |
-| Ollama mit Qwen 3.5 9B | lokale semantische Bewertung |
+| Ollama ≥ 0.5 mit Qwen 3.5 9B | lokale semantische Bewertung |
 | SMTP-Zugang | Ziel `private_mail` |
 | Telegram-Bot + Chat-ID | Ziel `private_telegram` |
 | Separater Telegram-Bot + private Chat-/Benutzer-ID (optional) | zusätzlicher Freigabekanal |
@@ -292,6 +292,12 @@ behandelt das Gateway die Textlage als eigene, festgehaltene Tatsache:
 - **Die Grundlage steht in der Freigabeansicht**, oberhalb der Modellbegründung, zusammen mit dem
   Inhaltsauszug aus der Quelle. Alles unterhalb von „Dokumenttext gelesen und bestätigt“ ist als
   solches markiert.
+- **Eine unvollständige Antwort kostet nicht die ganze Aktion.** Das Gateway verlangt die Antwort
+  als JSON-Schema (`format`), sodass ein fehlendes Feld gar nicht erst entstehen kann. Kommt es
+  trotzdem dazu, gilt die ausgelassene Angabe als *nicht bestätigt* — `purposeMatch` false,
+  manuelle Prüfung empfohlen — und die offenen Punkte sagen ausdrücklich, dass das die Vorsicht des
+  Gateways ist und keine Aussage des Modells. Vorher verwarf eine fehlende Angabe die gesamte
+  vorbereitete Aktion samt aller bereits bewerteten Anhänge.
 
 Ein Scan ohne Texterkennung wird deswegen nicht abgelehnt — versandt wird die Datei selbst, und der
 Nutzer kann sie öffnen. Was das Gateway schuldet, ist keine Verweigerung, sondern eine
