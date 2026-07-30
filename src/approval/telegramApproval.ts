@@ -349,12 +349,17 @@ function renderChunks(view: LocalActionView): string[] {
 /**
  * Renders the notification.
  *
- * Telegram is an external cloud service, so this channel carries metadata and
- * the local model's verdict — never the content either one describes. Document
- * excerpts, source attributes, the model's reasoning, an outgoing subject or
- * body, a summary's characters and the residual samples all stay in the browser
- * portal, which remains the only screen that shows what is actually released.
- * What is left here is enough to recognise the request and to reject it.
+ * Telegram is an external cloud service, so this channel carries metadata, the
+ * local model's verdict and — for a send — the outgoing message text itself,
+ * but never anything derived from the private documents. The distinction is the
+ * origin of the characters, not who is about to receive them: a subject and a
+ * body are either composed here from the purpose and the safe label, or written
+ * by the cloud agent, which already holds them. A document excerpt, a source
+ * attribute, the model's reasoning, the text of a summary and the residual
+ * samples are read out of the document, so they stay in the browser portal.
+ *
+ * Attachments are the documents, so they are named, typed and hashed here and
+ * never carried.
  */
 function renderFullText(view: LocalActionView): string {
     const lines: string[] = [];
@@ -394,9 +399,13 @@ function renderFullText(view: LocalActionView): string {
             lines.push('⚠️ Vom Agenten vorgeschlagener Empfänger — Adresse oben genau prüfen.');
         }
         lines.push(`Nachricht: ${authorshipLabel(view.egress.authoredByAgent, view.egress.body)}.`);
-        lines.push(
-            `Umfang: Betreff ${view.egress.subject?.length ?? 0} Zeichen, Text ${view.egress.body.length} Zeichen.`
-        );
+        lines.push('');
+        // Verbatim, because approving here is approving exactly these characters.
+        // `buildSendPlan` always sets a subject; a stored record from before that
+        // was true would not, and an empty line there would read as none.
+        lines.push(`Betreff: ${view.egress.subject ?? '(keiner)'}`);
+        lines.push('Text:');
+        lines.push(view.egress.body);
         lines.push('');
         lines.push(`Anhänge (${view.egress.attachments.length}, gesamt ${view.egress.totalBytes} Bytes):`);
         view.egress.attachments.forEach((attachment, index) => {
@@ -422,8 +431,8 @@ function renderFullText(view: LocalActionView): string {
     lines.push('');
     lines.push(
         mayApproveHere(view)
-            ? 'Der Nachrichtentext ist nur im Portal sichtbar.'
-            : 'Freigabe nur im Portal: der freizugebende Text wird hier nicht angezeigt. Ablehnen ist hier möglich.'
+            ? 'Betreff und Text stehen oben vollständig. Der Inhalt der Anhänge ist nur im Portal zu sehen.'
+            : 'Freigabe nur im Portal: der Text der Zusammenfassung wird hier nicht angezeigt. Ablehnen ist hier möglich.'
     );
     lines.push(`Aktion: ${view.actionId}`);
     return lines.join('\n');
@@ -432,22 +441,16 @@ function renderFullText(view: LocalActionView): string {
 /**
  * Whether a decision made here can be an approval.
  *
- * Approving means releasing exact characters a human read. Once this channel no
- * longer shows those characters, it may only approve what carries none it could
- * have shown: a summary never qualifies, and a send does only while the gateway
- * itself wrote subject and body from its own template. Rejecting releases
- * nothing and therefore stays available everywhere.
+ * Approving means releasing exact characters a human read, so this channel may
+ * only approve what it has shown in full. For a send that is subject and body,
+ * both rendered verbatim above; the attachments are released as files, and a
+ * file is identified by name, type, size and SHA-256 rather than read. A
+ * summary is the one payload that *is* the text, and that text comes out of the
+ * document — it is never shown here and therefore never approvable here.
+ * Rejecting releases nothing and stays available for both.
  */
 function mayApproveHere(view: LocalActionView): boolean {
-    if (view.kind === 'summarize_resource') {
-        return false;
-    }
-    if (view.egress.authoredByAgent.subject || view.egress.authoredByAgent.body) {
-        return false;
-    }
-    // A gateway-composed body still quotes a note from Hermes verbatim under the
-    // attribution line, and `authoredByAgent` does not record that.
-    return !view.egress.body.includes(AGENT_NOTE_MARKER);
+    return view.kind === 'send_resource';
 }
 
 function authorshipLabel(authored: { subject: boolean; body: boolean }, body: string): string {

@@ -174,7 +174,7 @@ describe('Telegram-Freigabekanal: Textprojektion', () => {
         assert.ok(!/webUrl/i.test(text));
     });
 
-    it('sendet Dokumentname und Modellbewertung, aber keinen Inhalt', async () => {
+    it('sendet Dokumentname, Modellbewertung und den ausgehenden Text, aber keinen Dokumentinhalt', async () => {
         const created = await harness();
         created.source.resources[0]!.attributes = { Korrespondent: 'Finanzamt Musterstadt' };
         created.source.resources[0]!.excerpt = 'Steuernummer 123/456/78900, Erstattung 1.234,56 EUR.';
@@ -204,15 +204,15 @@ describe('Telegram-Freigabekanal: Textprojektion', () => {
         await waitUntil(() => client.sendMessageCalls().length > 0);
 
         const text = sentText(client);
-        // Name and verdict: what the channel is allowed to carry.
+        // Name, verdict and the characters that would be sent as text.
         assert.ok(text.includes('Lebenslauf 2026'));
         assert.match(text, /Sensibilität/);
-        // Content, and everything that narrates it.
+        assert.ok(text.includes('Bescheid Musterstadt'));
+        assert.ok(text.includes('Anbei der Bescheid über die Erstattung.'));
+        // Read out of the document, and everything that narrates it.
         assert.ok(!text.includes('Steuernummer'));
         assert.ok(!text.includes('Finanzamt Musterstadt'));
         assert.ok(!text.includes('Testbegründung'));
-        assert.ok(!text.includes('Bescheid Musterstadt'));
-        assert.ok(!text.includes('Anbei der Bescheid'));
     });
 
     it('zeigt den Zusammenfassungstext nicht', async () => {
@@ -292,6 +292,49 @@ describe('Telegram-Freigabekanal: Textprojektion', () => {
                 assert.ok(call.body.reply_markup);
             }
         });
+    });
+
+    it('verteilt ein langes Anschreiben auf mehrere Teile und gibt über den letzten frei', async () => {
+        const created = await harness();
+        const found = await created.orchestrator.findResource({ query: QUERY, purpose: PURPOSE });
+        assert.ok(found.status === 'resolved');
+        // A real cover letter is what makes a multi-part message routine now that
+        // the body is rendered; `MAX_BODY_CHARS` allows a good deal more than this.
+        const letter = `Sehr geehrte Damen und Herren,\n\n${'Anbei meine Unterlagen. '.repeat(300)}`;
+        const prepared = await created.orchestrator.prepareAction({
+            reference: found.resource.reference,
+            target: 'private_mail',
+            purpose: PURPOSE,
+            body: letter
+        });
+        const settings = await activeSettings(created.dataDir);
+        const client = new FakeTelegramClient();
+        const adapter = new TelegramApprovalAdapter(
+            created.orchestrator,
+            created.audit,
+            settings,
+            undefined,
+            client
+        );
+
+        const view = created.orchestrator
+            .localPendingActions()
+            .find((v) => v.actionId === prepared.action_id)!;
+        adapter.notifyPending(view);
+        await waitUntil(() => client.sendMessageCalls().length > 1);
+
+        // Split across parts, but complete: every character the recipient would get.
+        const sent = client.sendMessageCalls();
+        assert.ok(sent.length >= 2);
+        assert.ok(sentText(client).includes(letter.slice(-200)));
+        assert.equal(sent.at(-2)!.body.reply_markup, undefined);
+
+        client.queueUpdates(callbackUpdate(callbackDataOf(client, 'a')));
+        await adapter.pollOnce();
+
+        await waitForTerminal(created.orchestrator, prepared.action_id);
+        assert.equal(created.orchestrator.getActionStatus(prepared.action_id).status, 'completed');
+        assert.equal(created.target.delivered.length, 1);
     });
 });
 
@@ -379,7 +422,7 @@ describe('Telegram-Freigabekanal: Entscheidung', () => {
         assert.equal(created.orchestrator.getActionStatus(prepared.action_id).status, 'rejected');
     });
 
-    it('bietet bei vom Agenten verfasstem Text nur Ablehnen an', async () => {
+    it('zeigt einen vom Agenten verfassten Betreff und Text wörtlich und bleibt freigebbar', async () => {
         const created = await harness();
         const found = await created.orchestrator.findResource({ query: QUERY, purpose: PURPOSE });
         assert.ok(found.status === 'resolved');
@@ -387,6 +430,7 @@ describe('Telegram-Freigabekanal: Entscheidung', () => {
             reference: found.resource.reference,
             target: 'private_mail',
             purpose: PURPOSE,
+            subject: 'Vom Agenten verfasster Betreff.',
             body: 'Vom Agenten verfasster Text.'
         });
         const settings = await activeSettings(created.dataDir);
@@ -405,13 +449,23 @@ describe('Telegram-Freigabekanal: Entscheidung', () => {
         adapter.notifyPending(view);
         await waitUntil(() => client.sendMessageCalls().length > 0);
 
+        // These characters come from the cloud agent, not from the document, so
+        // showing them here releases nothing the agent does not already hold.
+        const text = sentText(client);
+        assert.ok(text.includes('Vom Agenten verfasster Betreff.'));
+        assert.ok(text.includes('Vom Agenten verfasster Text.'));
+
         const buttons = keyboardOf(client);
-        assert.equal(buttons.length, 1);
-        assert.ok(buttons[0]!.callback_data.startsWith('r:'));
-        assert.equal(created.target.delivered.length, 0);
+        assert.equal(buttons.length, 2);
+        client.queueUpdates(callbackUpdate(callbackDataOf(client, 'a')));
+        await adapter.pollOnce();
+
+        await waitForTerminal(created.orchestrator, prepared.action_id);
+        assert.equal(created.orchestrator.getActionStatus(prepared.action_id).status, 'completed');
+        assert.equal(created.target.delivered.length, 1);
     });
 
-    it('bietet auch bei einem Hinweis des Agenten im lokal erzeugten Text nur Ablehnen an', async () => {
+    it('zeigt einen Hinweis des Agenten im lokal erzeugten Text und bleibt freigebbar', async () => {
         const created = await harness();
         const found = await created.orchestrator.findResource({ query: QUERY, purpose: PURPOSE });
         assert.ok(found.status === 'resolved');
@@ -441,19 +495,19 @@ describe('Telegram-Freigabekanal: Entscheidung', () => {
         adapter.notifyPending(view);
         await waitUntil(() => client.sendMessageCalls().length > 0);
 
-        assert.ok(!sentText(client).includes('Vergütung'));
-        const buttons = keyboardOf(client);
-        assert.equal(buttons.length, 1);
+        const text = sentText(client);
+        assert.ok(text.includes('Vergütung'));
+        // The attribution stays attached to the words it attributes.
+        assert.ok(text.includes('Hinweis des Agenten (nicht lokal verifiziert):'));
 
-        const rejectData = callbackDataOf(client, 'r');
-        client.queueUpdates(callbackUpdate(`a${rejectData.slice(1)}`));
+        const buttons = keyboardOf(client);
+        assert.equal(buttons.length, 2);
+        client.queueUpdates(callbackUpdate(callbackDataOf(client, 'a')));
         await adapter.pollOnce();
 
-        assert.equal(
-            created.orchestrator.getActionStatus(prepared.action_id).status,
-            'awaiting_local_approval'
-        );
-        assert.equal(created.target.delivered.length, 0);
+        await waitForTerminal(created.orchestrator, prepared.action_id);
+        assert.equal(created.orchestrator.getActionStatus(prepared.action_id).status, 'completed');
+        assert.equal(created.target.delivered.length, 1);
     });
 
     it('ruft bei Ablehnung rejectAction auf', async () => {

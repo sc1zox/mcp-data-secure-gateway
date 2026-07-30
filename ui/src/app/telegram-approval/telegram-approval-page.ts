@@ -54,16 +54,16 @@ import { Icon } from '../shared/icon';
             <div class="warning">
                 <ltg-icon name="alert" [size]="20" />
                 <div>
-                    <strong>Metadaten verlassen den Rechner.</strong>
+                    <strong>Metadaten und Nachrichtentext verlassen den Rechner.</strong>
                     <p>
                         Nach dem Aktivieren gehen Dokumentname, Quelle und Quellkennung,
                         Medientyp und Größe, Zweck, Ziel und Empfänger, Anhangsnamen mit
-                        Prüfsummen sowie die Modellbewertung an Telegram. Dokumentinhalt,
-                        Textauszüge, Merkmale, Betreff und Nachrichtentext, der Text einer
-                        Zusammenfassung und Originaldateien werden nicht gesendet — und was
-                        dort nicht steht, ist dort auch nicht freigebbar: Zusammenfassungen
-                        und Sendungen mit vom Agenten verfasstem Text lassen sich in Telegram
-                        nur ablehnen.
+                        Prüfsummen, die Modellbewertung und bei einer Sendung Betreff und
+                        Nachrichtentext im Wortlaut an Telegram. Was aus dem Dokument gelesen
+                        wurde, bleibt hier: Dokumentinhalt, Textauszüge, Merkmale, die
+                        Modellbegründung, der Text einer Zusammenfassung und Originaldateien —
+                        und was dort nicht steht, ist dort auch nicht freigebbar:
+                        Zusammenfassungen lassen sich in Telegram nur ablehnen.
                     </p>
                 </div>
             </div>

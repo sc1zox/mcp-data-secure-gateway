@@ -10,10 +10,13 @@ vollständige, nummerierte Liste der 14 Sicherheitsinvarianten und ihre Durchset
 Seite kopiert sie nicht, sondern beschreibt nur den Mechanismus.
 
 Der optionale Telegram-Freigabekanal ist eine zusätzliche externe Grenze, aber kein Weg zu Hermes:
-Bei ausdrücklicher Aktivierung überträgt er an einen fest konfigurierten privaten Chat nur die
-Kennzeichen einer wartenden Freigabe — Dokumentname, Metadaten und Modellbewertung —, jedoch weder
-Dokumentinhalt noch Nachrichten- oder Zusammenfassungstext, Originaldateien, Quell-URLs oder
-Portal-/MCP-Tokens. Was er nicht anzeigt, lässt er dort auch nicht freigeben.
+Bei ausdrücklicher Aktivierung überträgt er an einen fest konfigurierten privaten Chat die
+Kennzeichen einer wartenden Freigabe — Dokumentname, Metadaten und Modellbewertung — sowie bei
+einer Sendung Betreff und Nachrichtentext im Wortlaut, weil diese Zeichen lokal aus Zweck und
+Bezeichnung entstehen oder vom Cloud-Agenten stammen. Nicht übertragen wird, was aus dem Dokument
+gelesen wurde: Dokumentinhalt, Textauszüge, Modellbegründung und Zusammenfassungstext, ebenso
+Originaldateien, Quell-URLs und Portal-/MCP-Tokens. Was er nicht anzeigt, lässt er dort auch nicht
+freigeben — deshalb ist eine Zusammenfassung in Telegram nur ablehnbar.
 Chat und entscheidender Benutzer werden separat fest gebunden. Dieser Kanal ist unabhängig vom
 ausgehenden Ziel `private_telegram`; Details stehen in `README.md`, Abschnitt „Optionaler
 Telegram-Freigabekanal".

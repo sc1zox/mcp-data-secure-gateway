@@ -147,22 +147,27 @@ deaktiviert und unabhängig vom Versandziel `private_telegram`: Ein eigener Bot 
 denselben Bindungs-Hash aus wie das Browserportal. Er versendet keine Originaldateien und ändert
 die Konfiguration der ausgehenden Ziele nicht.
 
-Telegram ist ein externer Cloud-Dienst und erhält deshalb keinen Inhalt, sondern nur, woran eine
-wartende Freigabe zu erkennen ist: Dokumentname, Quelle und Quellkennung, Medientyp und Größe,
-Zweck, Ziel und Empfänger, Anhangsnamen mit Prüfsummen sowie die Modellbewertung als Sensibilität
-und Konfidenz. Textauszüge aus dem Dokument, dessen Merkmale, die Begründung des Modells, Betreff
-und Nachrichtentext einer Sendung und der Text einer Zusammenfassung bleiben im Browserportal;
-ebenso Originaldateien, Portal-/MCP-Tokens und Quell-URLs. Dokumentnamen, Zweck, Anhangsnamen und
-bei einem Ziel mit angebbarem Empfänger dessen vollständige Adresse sind selbst schon
-aussagekräftig; deshalb muss der verwendete Chat privat sein. Nur die fest gespeicherte Chat-ID
-zusammen mit der fest gespeicherten Telegram-Benutzer-ID darf entscheiden.
+Telegram ist ein externer Cloud-Dienst und bekommt deshalb nichts, was aus einem privaten Dokument
+gelesen wurde. Es geht dorthin, woran eine wartende Freigabe zu erkennen ist — Dokumentname, Quelle
+und Quellkennung, Medientyp und Größe, Zweck, Ziel und Empfänger, Anhangsnamen mit Prüfsummen sowie
+die Modellbewertung als Sensibilität und Konfidenz — und bei einer Sendung zusätzlich Betreff und
+Nachrichtentext im Wortlaut. Maßgeblich ist die Herkunft der Zeichen, nicht ihr Empfänger: Betreff
+und Text sind entweder lokal aus Zweck und geprüfter Bezeichnung zusammengestellt oder vom
+Cloud-Agenten geschrieben, der sie ohnehin schon hat. Aus dem Dokument gelesen sind dagegen
+Textauszüge, dessen Merkmale, die Begründung des Modells und der Text einer Zusammenfassung; die
+bleiben im Browserportal, ebenso Originaldateien, Portal-/MCP-Tokens und Quell-URLs. Dokumentnamen,
+Zweck, Anhangsnamen, der Nachrichtentext und bei einem Ziel mit angebbarem Empfänger dessen
+vollständige Adresse sind selbst schon aussagekräftig; deshalb muss der verwendete Chat privat sein.
+Nur die fest gespeicherte Chat-ID zusammen mit der fest gespeicherten Telegram-Benutzer-ID darf
+entscheiden.
 
-Was hier nicht zu sehen ist, kann hier auch nicht freigegeben werden: Eine Zusammenfassung sowie
-eine Sendung mit vom Agenten verfasstem Betreff oder Text — und ebenso eine mit einem Hinweis des
-Agenten im lokal erzeugten Begleittext — bekommen in Telegram nur „Ablehnen“. Eine Freigabe dieser
-Aktionen wäre die Freigabe von Zeichen, die niemand gelesen hat; sie wird auch bei manipulierten
-Callback-Daten verweigert. Freigegeben werden sie im Portal. Eine Sendung, deren Begleittext
-vollständig lokal erzeugt wurde, bleibt hier entscheidbar.
+Was hier nicht zu sehen ist, kann hier auch nicht freigegeben werden: Eine **Zusammenfassung**
+bekommt in Telegram nur „Ablehnen“, weil ihre Freigabe genau der Text ist, der nicht dorthin geht —
+eine Freigabe wäre die Freigabe von Zeichen, die niemand gelesen hat, und sie wird auch bei
+manipulierten Callback-Daten verweigert. Freigegeben wird sie im Portal. Eine **Sendung** ist in
+Telegram entscheidbar, weil ihr vollständiger Text dort steht; ihre Anhänge sind Dateien und werden
+über Name, Medientyp, Größe und SHA-256 identifiziert, nicht gelesen — wer den Inhalt eines Anhangs
+vor der Entscheidung sehen will, öffnet das Portal.
 
 Die Einrichtung erfolgt ausschließlich im token-geschützten lokalen Portal:
 
