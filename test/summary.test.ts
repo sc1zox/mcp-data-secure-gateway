@@ -110,7 +110,7 @@ describe('der Text verlässt den Rechner erst nach der Freigabe', () => {
         const view = created.orchestrator.localAction(state.action_id);
         assert.ok(view?.kind === 'summarize_resource');
 
-        await created.orchestrator.approveAction(state.action_id, view.bindingHash);
+        await created.orchestrator.approveAction(state.action_id);
         await waitForAction(created.orchestrator, state.action_id, ['completed']);
 
         const collected = await created.orchestrator.getSummary(state.action_id);
@@ -156,21 +156,6 @@ describe('der Text verlässt den Rechner erst nach der Freigabe', () => {
 });
 
 describe('die Freigabe bindet an genau diesen Text', () => {
-    it('verweigert die Freigabe bei abweichender Bindung', async () => {
-        const created = await harness();
-        const state = await created.orchestrator.summarizeResource({
-            reference: await reference(created),
-            purpose: PURPOSE
-        });
-
-        await assert.rejects(
-            () => created.orchestrator.approveAction(state.action_id, 'a'.repeat(64)),
-            /stimmt nicht mehr/
-        );
-        const collected = await created.orchestrator.getSummary(state.action_id);
-        assert.equal(collected.summary, undefined);
-    });
-
     it('führt eine Aktion nicht aus, deren Text nach der Anzeige verändert wurde', async () => {
         const created = await harness();
         const state = await created.orchestrator.summarizeResource({
@@ -186,7 +171,7 @@ describe('die Freigabe bindet an genau diesen Text', () => {
         stored.plan.summary = 'Ein ganz anderer Text mit dem Namen Max Mustermann.';
 
         await assert.rejects(
-            () => created.orchestrator.approveAction(state.action_id, view.bindingHash),
+            () => created.orchestrator.approveAction(state.action_id),
             /inkonsistent/
         );
         const collected = await created.orchestrator.getSummary(state.action_id);
@@ -201,7 +186,7 @@ describe('die Freigabe bindet an genau diesen Text', () => {
         });
         const view = created.orchestrator.localAction(state.action_id);
         assert.ok(view?.kind === 'summarize_resource');
-        await created.orchestrator.approveAction(state.action_id, view.bindingHash);
+        await created.orchestrator.approveAction(state.action_id);
         await waitForAction(created.orchestrator, state.action_id, ['completed']);
 
         // Tampering after the release must still not produce a handover.
@@ -216,7 +201,7 @@ describe('die Freigabe bindet an genau diesen Text', () => {
 });
 
 describe('lokale Prüfung der Zusammenfassung', () => {
-    it('verwirft eine Zusammenfassung, die eine URL enthält, statt sie vorzulegen', async () => {
+    it('legt eine Zusammenfassung mit einer URL vor und warnt, statt sie zu verwerfen', async () => {
         const created = await harness({
             summaryText: 'Das Dokument verweist auf https://intern.example/akte und nennt Fristen.'
         });
@@ -226,9 +211,44 @@ describe('lokale Prüfung der Zusammenfassung', () => {
             purpose: PURPOSE
         });
 
-        assert.equal(state.status, 'failed');
-        assert.match(state.note, /Prüfung nicht bestanden/);
-        assert.equal(created.orchestrator.localPendingActions().length, 0);
+        assert.equal(state.status, 'awaiting_local_approval');
+        const view = created.orchestrator.localAction(state.action_id);
+        assert.ok(view?.kind === 'summarize_resource');
+        const kinds = view.summary.residuals.map((finding) => finding.kind);
+        assert.ok(kinds.includes('Webadresse'), `Fund fehlt: ${kinds.join(', ')}`);
+    });
+
+    it('legt eine Zusammenfassung mit einem technischen Pfad vor und warnt', async () => {
+        const created = await harness({
+            summaryText: 'Die Anleitung beschreibt die Konfiguration unter /etc/nginx im Detail.'
+        });
+
+        const state = await created.orchestrator.summarizeResource({
+            reference: await reference(created),
+            purpose: PURPOSE
+        });
+
+        assert.equal(state.status, 'awaiting_local_approval');
+        const view = created.orchestrator.localAction(state.action_id);
+        assert.ok(view?.kind === 'summarize_resource');
+        assert.ok(view.summary.residuals.some((finding) => finding.kind === 'Dateipfad'));
+    });
+
+    it('gibt eine freigegebene Zusammenfassung mit URL auch tatsächlich heraus', async () => {
+        const summaryText = 'Das Projekt liegt auf https://github.com/example/repo und ist offen.';
+        const created = await harness({ summaryText });
+
+        const state = await created.orchestrator.summarizeResource({
+            reference: await reference(created),
+            purpose: PURPOSE
+        });
+        await created.orchestrator.approveAction(state.action_id);
+        await waitForAction(created.orchestrator, state.action_id, ['completed']);
+
+        // The second guard call, on the way out through `get_summary`, must
+        // agree with the first — otherwise the block simply moves later.
+        const collected = await created.orchestrator.getSummary(state.action_id);
+        assert.equal(collected.summary, summaryText);
     });
 
     it('verwirft eine Zusammenfassung, die ein registriertes Geheimnis enthält', async () => {
@@ -360,7 +380,7 @@ describe('Nachvollziehbarkeit', () => {
         });
         const view = created.orchestrator.localAction(state.action_id);
         assert.ok(view?.kind === 'summarize_resource');
-        await created.orchestrator.approveAction(state.action_id, view.bindingHash);
+        await created.orchestrator.approveAction(state.action_id);
         await waitForAction(created.orchestrator, state.action_id, ['completed']);
         await created.orchestrator.getSummary(state.action_id);
 
@@ -373,10 +393,14 @@ describe('Nachvollziehbarkeit', () => {
         }
 
         // The trail records the digest and the size, not a second copy of the text.
+        // The digest is internal now: it is in the stored plan and in the audit,
+        // and nowhere on the screen the user decided from.
+        const stored = created.actions.get(state.action_id);
+        assert.ok(stored?.plan.kind === 'summarize_resource');
         const egress = events.find((event) => event.type === 'egress_performed');
         const detail = egress?.detail as Record<string, unknown>;
         assert.equal(detail.kind, 'summarize_resource');
-        assert.equal(detail.summarySha256, view.summary.sha256);
+        assert.equal(detail.summarySha256, stored.plan.summarySha256);
         assert.equal(detail.summaryChars, view.summary.text.length);
         assert.equal(JSON.stringify(detail).includes(view.summary.text), false);
     });

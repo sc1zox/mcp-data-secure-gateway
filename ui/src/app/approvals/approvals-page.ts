@@ -286,7 +286,7 @@ export class ApprovalsPage {
         try {
             switch (decision) {
                 case 'approve':
-                    await this.api.approve(action.actionId, action.bindingHash);
+                    await this.api.approve(action.actionId);
                     this.notify.ok(
                         action.kind === 'summarize_resource'
                             ? 'Freigegeben. Der Agent kann den Text jetzt abholen.'

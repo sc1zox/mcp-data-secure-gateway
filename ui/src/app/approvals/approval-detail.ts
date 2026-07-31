@@ -56,17 +56,6 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
             </header>
 
             <div class="body">
-                @if (action().needsRefetch) {
-                    <p class="strip caution">
-                        <ltg-icon name="alert" [size]="16" />
-                        <span>
-                            Die Originaldaten liegen nicht mehr im Zwischenspeicher, etwa nach
-                            einem Neustart. Bei der Freigabe werden sie erneut aus der Quelle
-                            gelesen und gegen die unten angezeigte Prüfsumme verglichen.
-                        </span>
-                    </p>
-                }
-
                 <!-- 1. The facts: what leaves, and where it goes. -->
                 <section class="egress">
                     <h3 class="section-head">
@@ -78,11 +67,26 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
                         <div class="strip alarm">
                             <ltg-icon name="alert" [size]="16" />
                             <span>
-                                Empfänger vom Agenten vorgeschlagen, nicht lokal vorkonfiguriert.
-                                Adresse zeichenweise prüfen — Tippfehler, ähnliche Domains.
+                                @if (action().target.firstTimeRecipient) {
+                                    <strong>Diese Adresse wurde hier noch nie freigegeben.</strong>
+                                    Vom Agenten vorgeschlagen, nicht lokal vorkonfiguriert und
+                                    ohne Vorgeschichte. Zeichenweise prüfen — Tippfehler,
+                                    ähnliche Domains.
+                                } @else {
+                                    Empfänger vom Agenten vorgeschlagen, nicht lokal
+                                    vorkonfiguriert. Adresse zeichenweise prüfen — Tippfehler,
+                                    ähnliche Domains.
+                                }
                             </span>
                         </div>
-                        <p class="recipient">{{ action().target.recipientDisplay }}</p>
+                        <p class="recipient" [class.first-time]="action().target.firstTimeRecipient">
+                            {{ action().target.recipientDisplay }}
+                        </p>
+                        @if (!action().target.firstTimeRecipient) {
+                            <p class="ltg-muted small">
+                                An diese Adresse wurde hier schon einmal freigegeben.
+                            </p>
+                        }
                     }
 
                     @if (agentWroteAnything()) {
@@ -134,12 +138,6 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
                                     <span class="file-name">{{ file.filename }}</span>
                                     <span class="ltg-muted">{{ file.mimeType }}</span>
                                     <span class="ltg-muted">{{ bytes(file.byteSize) }}</span>
-                                    <span
-                                        class="ltg-mono ltg-muted hash"
-                                        [matTooltip]="hashTooltip()"
-                                    >
-                                        sha256 {{ file.sha256 }}
-                                    </span>
                                 </li>
                             }
                         </ul>
@@ -150,9 +148,9 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
                                     Passen diese Anhänge nicht unter das Limit des Ziels, darf das
                                     Gateway sie vor dem Versand verkleinern — <strong>höchstens
                                     {{ policy.maxProfile }}</strong>, nur
-                                    {{ formatList() }}. Größe und sha256 oben gelten
-                                    dann für die Originale, nicht für die versendete Datei. Der
-                                    Inhalt bleibt derselbe, Dateiname und Format auch.
+                                    {{ formatList() }}. Die Größe oben gilt dann für das
+                                    Original, nicht für die versendete Datei. Der Inhalt bleibt
+                                    derselbe, Dateiname und Format auch.
                                 </span>
                             </p>
                         }
@@ -255,11 +253,10 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
                     }
                 </section>
 
-                <p
-                    class="ltg-mono binding"
-                    matTooltip="Diese Freigabe bindet an genau diesen Stand. Ändert sich etwas, lehnt das Gateway sie ab."
-                >
-                    Freigabebindung {{ action().bindingHash }}
+                <p class="binding">
+                    Freigabe gilt für Aktion {{ action().actionId }} — genau für diesen Stand.
+                    Eine Änderung an Empfänger, Betreff, Text oder Anhängen erzeugt eine neue
+                    Aktion.
                 </p>
             </div>
 
@@ -418,6 +415,14 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
             overflow-wrap: anywhere;
         }
 
+        /* A never-before-approved address is the one field on this page that
+           carries the whole decision, so it is the one that looks like it. */
+        .recipient.first-time {
+            border: 1px solid var(--ltg-alarm);
+            background: var(--ltg-alarm-surface);
+            color: var(--ltg-alarm);
+        }
+
         .label {
             margin: 1rem 0 0.35rem;
             font-size: 0.72rem;
@@ -535,11 +540,6 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
             opacity: 0.7;
         }
 
-        .hash {
-            grid-column: 1 / -1;
-            cursor: help;
-        }
-
         .judgement {
             padding: 1rem 1.15rem;
             border-radius: var(--ltg-radius);
@@ -610,7 +610,6 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
             margin: 0;
             font-size: 0.72rem;
             color: var(--mat-sys-on-surface-variant);
-            cursor: help;
         }
 
         .actions {
@@ -687,17 +686,6 @@ export class ApprovalDetail {
         const formats = (this.optimization()?.formats ?? []).map(shortFormat);
         return formats.length <= 1 ? (formats[0] ?? '') : `${formats.slice(0, -1).join(', ')} und ${formats.at(-1)}`;
     });
-
-    /**
-     * The digest means two different things depending on whether the action may
-     * be optimized, and saying the wrong one is worse than saying nothing.
-     */
-    protected readonly hashTooltip = computed(() =>
-        this.optimization()
-            ? 'Digest des Originals. Wird vor der Verarbeitung geprüft; die versendete Datei kann ' +
-              'nach einer Verkleinerung einen anderen Digest haben. Das Audit hält beide fest.'
-            : 'Digest genau der Bytes, die geplant sind. Vor dem Senden erneut geprüft.'
-    );
 
     /**
      * True only for the one case that deserves no caveat: the model read the

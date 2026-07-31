@@ -151,7 +151,7 @@ export class ResourceGate {
         for (const resolved of resources) {
             if (!safeEqual(resolved.currentStateHash, resolved.record.stateHash)) {
                 changed = true;
-                await this.audit.record('action_binding_mismatch', {
+                await this.audit.record('resource_state_mismatch', {
                     correlationId,
                     resourceRef: resolved.record.ref,
                     detail: {

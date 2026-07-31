@@ -150,7 +150,7 @@ export class AuditPage {
             new Set<string>([
                 'invariant_blocked',
                 'hermes_request_rejected',
-                'action_binding_mismatch',
+                'resource_state_mismatch',
                 'reference_rejected',
                 'judge_output_rejected',
                 'egress_failed'

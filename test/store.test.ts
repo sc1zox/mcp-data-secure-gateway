@@ -94,6 +94,86 @@ describe('JsonlStore', () => {
     });
 });
 
+describe('Audit-Aufbewahrung', () => {
+    async function trailWith(events: Array<{ ts: string; type: string }>, dir: string): Promise<void> {
+        const lines = events
+            .map((event, index) => JSON.stringify({ eventId: `e${index}`, ...event }))
+            .join('\n');
+        await writeFile(join(dir, 'audit.jsonl'), `${lines}\n`, 'utf8');
+    }
+
+    function daysAgo(days: number): string {
+        return new Date(Date.now() - days * 86_400_000).toISOString();
+    }
+
+    it('entfernt Einträge außerhalb des Aufbewahrungsfensters', async () => {
+        const dir = await tempDir();
+        await trailWith(
+            [
+                { ts: daysAgo(120), type: 'gateway_started' },
+                { ts: daysAgo(91), type: 'action_prepared' },
+                { ts: daysAgo(3), type: 'action_approved' }
+            ],
+            dir
+        );
+
+        const audit = new AuditLog(join(dir, 'audit.jsonl'), { retentionDays: 90, maxEntries: 1000 });
+        await audit.init();
+
+        const remaining = await audit.tail();
+        assert.deepEqual(
+            remaining.map((event) => event.type),
+            ['action_approved']
+        );
+    });
+
+    it('deckelt die Anzahl der Einträge und behält die jüngsten', async () => {
+        const dir = await tempDir();
+        await trailWith(
+            [
+                { ts: daysAgo(3), type: 'gateway_started' },
+                { ts: daysAgo(2), type: 'action_prepared' },
+                { ts: daysAgo(1), type: 'action_approved' }
+            ],
+            dir
+        );
+
+        const audit = new AuditLog(join(dir, 'audit.jsonl'), { retentionDays: 90, maxEntries: 2 });
+        await audit.init();
+
+        const remaining = await audit.tail();
+        assert.deepEqual(
+            remaining.map((event) => event.type),
+            ['action_approved', 'action_prepared']
+        );
+    });
+
+    it('lässt das Protokoll unangetastet, wenn keine Aufbewahrung konfiguriert ist', async () => {
+        const dir = await tempDir();
+        await trailWith([{ ts: daysAgo(5000), type: 'gateway_started' }], dir);
+
+        const audit = new AuditLog(join(dir, 'audit.jsonl'));
+        await audit.init();
+
+        assert.equal((await audit.tail()).length, 1);
+    });
+
+    it('schreibt nach dem Rotieren weiter an dieselbe Datei an', async () => {
+        const dir = await tempDir();
+        await trailWith([{ ts: daysAgo(120), type: 'gateway_started' }], dir);
+
+        const audit = new AuditLog(join(dir, 'audit.jsonl'), { retentionDays: 90, maxEntries: 1000 });
+        await audit.init();
+        await audit.record('action_prepared', { actionId: 'act_1' });
+
+        const remaining = await audit.tail();
+        assert.deepEqual(
+            remaining.map((event) => event.type),
+            ['action_prepared']
+        );
+    });
+});
+
 describe('ReferenceStore', () => {
     async function makeStore(): Promise<ReferenceStore> {
         const dir = await tempDir();
@@ -422,7 +502,6 @@ describe('Konfiguration', () => {
             localModel: { baseUrl: 'http://127.0.0.1:11434', model: 'qwen3.5:9b' },
             approval: {
                 uiToken: 'test-ui-token-with-at-least-thirty-two-characters',
-                telegramSettingsKey: 'test-telegram-key-with-at-least-thirty-two-characters'
             },
             targets: [
                 {

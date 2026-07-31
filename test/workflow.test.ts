@@ -91,7 +91,7 @@ describe('Betreff und Text vom Agenten', () => {
         assert.equal(view.egress.body, BODY);
         assert.deepEqual(view.egress.authoredByAgent, { subject: true, body: true });
 
-        await created.orchestrator.approveAction(actionId, view.bindingHash);
+        await created.orchestrator.approveAction(actionId);
         await waitForTerminal(created.orchestrator, actionId);
 
         const sent = created.target.delivered[0];
@@ -123,10 +123,16 @@ describe('Betreff und Text vom Agenten', () => {
         assert.doesNotMatch(view.egress.subject ?? '', /\n|\r/);
     });
 
-    it('bindet die Freigabe an genau diesen Text', async () => {
+    it('macht aus einem geänderten Text eine eigene Aktion', async () => {
         const created = await harness();
-        const first = created.orchestrator.localAction(await prepare(created, { body: 'Text A' }));
-        const second = created.orchestrator.localAction(await prepare(created, { body: 'Text B' }));
+        const firstId = await prepare(created, { body: 'Text A' });
+        const secondId = await prepare(created, { body: 'Text B' });
+
+        // Two texts, two actions: nothing was edited in place, so freigeben the
+        // one the user read cannot release the other.
+        assert.notEqual(firstId, secondId);
+        const first = created.actions.get(firstId);
+        const second = created.actions.get(secondId);
         assert.ok(first && second);
         assert.notEqual(first.bindingHash, second.bindingHash);
     });
@@ -149,7 +155,7 @@ describe('Auf die Entscheidung des Nutzers warten', () => {
         assert.ok(view?.kind === 'send_resource');
 
         const waiting = created.orchestrator.awaitActionDecision(actionId, 10);
-        await created.orchestrator.approveAction(actionId, view.bindingHash);
+        await created.orchestrator.approveAction(actionId);
 
         const result = await waiting;
         assert.equal(result.status, 'completed');
@@ -231,7 +237,7 @@ describe('Andere Ressource wählen', () => {
         assert.equal(after.bindingHash, before.bindingHash);
 
         // And it is genuinely approvable again, with the hash that was on screen.
-        await created.orchestrator.approveAction(actionId, before.bindingHash);
+        await created.orchestrator.approveAction(actionId);
         assert.equal(await waitForTerminal(created.orchestrator, actionId), 'completed');
     });
 
@@ -285,7 +291,7 @@ describe('Andere Ressource wählen', () => {
         await created.orchestrator.requestReselection(actionId);
 
         await assert.rejects(
-            () => created.orchestrator.approveAction(actionId, view.bindingHash),
+            () => created.orchestrator.approveAction(actionId),
             /steht nicht zur Freigabe/
         );
         assert.equal(created.target.delivered.length, 0);

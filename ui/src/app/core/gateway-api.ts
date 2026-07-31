@@ -79,15 +79,11 @@ export class GatewayApi {
         );
     }
 
-    approve(actionId: string, bindingHash: string): Promise<ApiOkResponse> {
-        // The binding hash that was on screen goes back with the approval so the
-        // server can refuse if anything about the action changed in between.
-        return firstValueFrom(
-            this.http.post<ApiOkResponse>('/api/approve', {
-                action_id: actionId,
-                binding_hash: bindingHash
-            })
-        );
+    approve(actionId: string): Promise<ApiOkResponse> {
+        // Only the id. An action never changes after it was prepared, so naming
+        // it names exactly the snapshot that was on screen; the server refuses
+        // any action that is no longer awaiting a decision.
+        return this.action('/api/approve', actionId);
     }
 
     reject(actionId: string): Promise<ApiOkResponse> {

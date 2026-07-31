@@ -17,6 +17,7 @@ import { AuditLog } from './store/auditLog.js';
 import { ActionStore } from './store/actionStore.js';
 import { ReferenceStore } from './store/referenceStore.js';
 import { SelectionStore } from './store/selectionStore.js';
+import { RecipientStore } from './store/recipientStore.js';
 import { createLogger, describeError, setLogLevel } from './util/log.js';
 
 const SWEEP_INTERVAL_MS = 30_000;
@@ -58,7 +59,7 @@ async function main(): Promise<void> {
     const dataDir = isAbsolute(config.dataDir) ? config.dataDir : resolve(process.cwd(), config.dataDir);
     await mkdir(dataDir, { recursive: true });
 
-    const audit = new AuditLog(join(dataDir, 'audit.jsonl'));
+    const audit = new AuditLog(join(dataDir, 'audit.jsonl'), config.audit);
     await audit.init();
 
     // Register every secret before anything can be serialised outwards.
@@ -68,9 +69,11 @@ async function main(): Promise<void> {
     const references = new ReferenceStore(dataDir, audit);
     const actions = new ActionStore(dataDir, audit);
     const selections = new SelectionStore(dataDir, audit);
+    const recipients = new RecipientStore(dataDir);
     await references.load();
     await actions.load();
     await selections.load();
+    await recipients.load();
 
     const sources = await SourceRegistry.fromConfig(config, createLogger('sources'));
     const targets = TargetRegistry.fromConfig(config, createLogger('targets'));
@@ -85,6 +88,7 @@ async function main(): Promise<void> {
         references,
         actions,
         selections,
+        recipients,
         audit,
         guard,
         createLogger('orchestrator')
@@ -93,12 +97,8 @@ async function main(): Promise<void> {
     const uiToken = config.approval.uiToken;
 
     // Its own store, separate from `config`: these credentials are entered
-    // interactively in the portal, not checked into version control (see
-    // `.hermes/plans/telegram-approval-channel.md`).
-    const telegramSettings = new TelegramSettingsStore(
-        dataDir,
-        config.approval.telegramSettingsKey
-    );
+    // interactively in the portal, not checked into version control.
+    const telegramSettings = new TelegramSettingsStore(dataDir);
     await telegramSettings.load();
     guard.registerSecret(telegramSettings.current().botToken);
     guard.registerSecret(telegramSettings.current().chatId);
@@ -216,7 +216,6 @@ function registerSecrets(guard: EgressGuard, config: GatewayConfig): void {
     guard.registerSecret(config.hermesInterface.http.bearerToken);
     guard.registerSecret(config.localModel.bearerToken);
     guard.registerSecret(config.approval.uiToken);
-    guard.registerSecret(config.approval.telegramSettingsKey);
     for (const source of config.sources) {
         // The source's web address exists only for links in the local UI. It is
         // registered here so that a payload towards Hermes carrying it fails the

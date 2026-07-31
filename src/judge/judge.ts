@@ -19,8 +19,7 @@ import {
     SUMMARY_SYSTEM_PROMPT,
     buildEgressUserPrompt,
     buildSelectionUserPrompt,
-    buildSummaryUserPrompt,
-    createFence
+    buildSummaryUserPrompt
 } from './prompts.js';
 
 /**
@@ -277,10 +276,9 @@ export class Judge {
             };
         }
 
-        const fence = createFence();
         const raw = await this.invoke(
-            SELECTION_SYSTEM_PROMPT(fence.nonce),
-            buildSelectionUserPrompt(fence, query, purpose, candidates),
+            SELECTION_SYSTEM_PROMPT,
+            buildSelectionUserPrompt(query, purpose, candidates),
             SELECTION_RESPONSE_FORMAT,
             'selection',
             correlationId
@@ -363,10 +361,9 @@ export class Judge {
         targetPurpose: string,
         correlationId: string
     ): Promise<EgressAssessment> {
-        const fence = createFence();
         const raw = await this.invoke(
-            EGRESS_SYSTEM_PROMPT(fence.nonce),
-            buildEgressUserPrompt(fence, resource, evidence, purpose, targetLabel, targetPurpose),
+            EGRESS_SYSTEM_PROMPT,
+            buildEgressUserPrompt(resource, evidence, purpose, targetLabel, targetPurpose),
             EGRESS_RESPONSE_FORMAT,
             'egress',
             correlationId
@@ -489,10 +486,9 @@ export class Judge {
         focus: string | undefined,
         correlationId: string
     ): Promise<SummaryDraft> {
-        const fence = createFence();
         const raw = await this.invoke(
-            SUMMARY_SYSTEM_PROMPT(fence.nonce),
-            buildSummaryUserPrompt(fence, resource, text, purpose, focus),
+            SUMMARY_SYSTEM_PROMPT,
+            buildSummaryUserPrompt(resource, text, purpose, focus),
             SUMMARY_RESPONSE_FORMAT,
             'summary',
             correlationId

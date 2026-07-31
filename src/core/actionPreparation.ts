@@ -39,6 +39,7 @@ import {
     MAX_SUBJECT_CHARS
 } from './limits.js';
 import { buildSendPlan, buildSummaryPlan } from './planBuilder.js';
+import type { PreparationKey, PreparationLimiter } from './preparationLimits.js';
 import { RefusalFactory } from './refusals.js';
 import { ResourceGate } from './resourceGate.js';
 import type { TargetLookup } from './orchestrator.js';
@@ -62,8 +63,32 @@ export class ActionPreparer {
         private readonly log: Logger,
         private readonly resourceGate: ResourceGate,
         private readonly refusals: RefusalFactory,
-        private readonly stage: (actionId: string, files: SourceFile[]) => void
+        private readonly stage: (actionId: string, files: SourceFile[]) => void,
+        private readonly limiter: PreparationLimiter
     ) {}
+
+    /**
+     * The approval-fatigue gate, run before the source is touched.
+     *
+     * Placed here rather than after the plan is built on purpose: a caller in a
+     * loop must not be able to make the gateway read documents and run local
+     * inference once per refused request. Everything the check needs is in the
+     * request itself.
+     */
+    private async guardAgainstFlood(
+        correlationId: string,
+        key: PreparationKey
+    ): Promise<PublicActionState | undefined> {
+        const refusal = this.limiter.check(key);
+        if (!refusal) {
+            return undefined;
+        }
+        this.log.warn('Vorbereitung abgelehnt, Schutz gegen Freigabeflut', {
+            reason: refusal,
+            kind: key.kind
+        });
+        return this.refusals.rejectRequest(correlationId, refusal, { reason: refusal });
+    }
 
     /**
      * Binds a reference (or ordered set) to a target and a purpose, producing
@@ -123,6 +148,23 @@ export class ActionPreparer {
             }
         } else if (recipientInput) {
             return this.refusals.rejectRequest(correlationId, 'recipient_not_allowed', { targetId: input.target });
+        }
+
+        const flooded = await this.guardAgainstFlood(correlationId, {
+            kind: 'send_resource',
+            resourceRefs: requestedReferences,
+            purpose,
+            targetId: descriptor.id,
+            recipient: descriptor.dynamicRecipient ? recipientInput : undefined,
+            subject: agentSubject,
+            body: agentBody,
+            // A note only reaches the message when the gateway composes the
+            // body; with an agent-written body it is unused, so it must not
+            // distinguish two otherwise identical requests either.
+            note: agentBody === undefined ? hermesNote : undefined
+        });
+        if (flooded) {
+            return flooded;
         }
 
         const resolvedSet = await this.resourceGate.resolveSet(correlationId, requestedReferences, purpose);
@@ -233,6 +275,16 @@ export class ActionPreparer {
             detail: { tool: 'summarize_resource', purpose, focus: focus ?? null }
         });
 
+        const flooded = await this.guardAgainstFlood(correlationId, {
+            kind: 'summarize_resource',
+            resourceRefs: [input.reference],
+            purpose,
+            focus
+        });
+        if (flooded) {
+            return flooded;
+        }
+
         const resolved = await this.resourceGate.resolveOne(correlationId, input.reference, purpose);
         if (!resolved.ok) {
             return this.refusals.rejectRequest(correlationId, resolved.code, resolved.detail);
@@ -332,6 +384,9 @@ export class ActionPreparer {
             expiresAt: new Date(now.getTime() + this.config.approval.actionTtlSeconds * 1000).toISOString()
         };
         await this.actions.create(action);
+        // Counted here, where an action actually came into being. A refused
+        // request costs the agent nothing against its rate.
+        this.limiter.recordPrepared();
         return action;
     }
 

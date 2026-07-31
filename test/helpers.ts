@@ -17,6 +17,7 @@ import { AuditLog } from '../src/store/auditLog.js';
 import { ActionStore } from '../src/store/actionStore.js';
 import { ReferenceStore } from '../src/store/referenceStore.js';
 import { SelectionStore } from '../src/store/selectionStore.js';
+import { RecipientStore } from '../src/store/recipientStore.js';
 import type { PrivateSource, SourceFile } from '../src/sources/source.js';
 import {
     TargetDeliveryError,
@@ -269,14 +270,16 @@ export function makeConfig(overrides: Record<string, unknown> = {}): GatewayConf
                 to: 'ich@example.org'
             }
         ],
+        ...overrides,
+        // Merged rather than replaced: a test that wants one different
+        // approval knob should not have to restate the UI token to get it.
         approval: {
             uiToken: 'test-ui-token-with-at-least-thirty-two-characters',
-            telegramSettingsKey: 'test-telegram-key-with-at-least-thirty-two-characters',
             actionTtlSeconds: 1800,
             referenceTtlSeconds: 3600,
-            selectionTtlSeconds: 1800
-        },
-        ...overrides
+            selectionTtlSeconds: 1800,
+            ...((overrides.approval as Record<string, unknown> | undefined) ?? {})
+        }
     });
 }
 
@@ -288,6 +291,7 @@ export interface Harness {
     references: ReferenceStore;
     actions: ActionStore;
     selections: SelectionStore;
+    recipients: RecipientStore;
     guard: EgressGuard;
     /** What the orchestrator gave the judge to read, per `assessEgress` call. */
     egressEvidence: EgressEvidence[];
@@ -314,9 +318,11 @@ export async function makeHarness(options: {
     const references = new ReferenceStore(dataDir, audit);
     const actions = new ActionStore(dataDir, audit);
     const selections = new SelectionStore(dataDir, audit);
+    const recipients = new RecipientStore(dataDir);
     await references.load();
     await actions.load();
     await selections.load();
+    await recipients.load();
 
     const source = new FakeSource(options.resources ?? [makeResource()]);
     const target = new FakeTarget('private_mail', options.targetDescriptor ?? {});
@@ -350,6 +356,7 @@ export async function makeHarness(options: {
         references,
         actions,
         selections,
+        recipients,
         audit,
         guard
     );
@@ -362,6 +369,7 @@ export async function makeHarness(options: {
         references,
         actions,
         selections,
+        recipients,
         guard,
         egressEvidence,
         dataDir,

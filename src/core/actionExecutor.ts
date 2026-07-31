@@ -16,12 +16,12 @@ import type {
     OptimizationInput
 } from '../attachments/types.js';
 import type { ActionStore } from '../store/actionStore.js';
+import type { RecipientStore } from '../store/recipientStore.js';
 import type { AuditLog } from '../store/auditLog.js';
 import type { SourceFile } from '../sources/source.js';
 import { TargetDeliveryError, type EgressAttachment, type EgressTarget } from '../targets/target.js';
 import { sha256Bytes, sha256Text, safeEqual } from '../util/hash.js';
 import { describeError, type Logger } from '../util/log.js';
-import { isSafeAttachment } from './attachmentSafety.js';
 import { verifyStoredBinding } from './binding.js';
 import type { TargetLookup } from './orchestrator.js';
 import { ResourceGate, ResourceSetChangedError } from './resourceGate.js';
@@ -46,6 +46,7 @@ export class ActionExecutor {
         private readonly actions: ActionStore,
         private readonly targets: TargetLookup,
         private readonly resourceGate: ResourceGate,
+        private readonly recipients: RecipientStore,
         private readonly audit: AuditLog,
         private readonly log: Logger,
         /**
@@ -68,11 +69,6 @@ export class ActionExecutor {
         return this.staged.has(actionId);
     }
 
-    /** Same check as `hasStaged`, named for read sites that ask "would sending need a refetch?". */
-    isStaged(actionId: string): boolean {
-        return this.staged.has(actionId);
-    }
-
     /**
      * Carries out what the user approved. Runs after the human decision and is
      * the only place in the gateway that hands a payload to anything.
@@ -88,15 +84,19 @@ export class ActionExecutor {
     /**
      * Releases an action for delivery.
      *
-     * `expectedBindingHash` is the hash the UI displayed. Requiring it back is
-     * how "an approval covers exactly the combination that was shown" becomes
-     * enforceable: if the record changed between rendering and clicking, the
-     * hashes differ and the approval is refused rather than applied to
-     * something the user never saw. `verifyStoredBinding` (invariant 12) then
-     * guards against a tampered store, where the hash must still follow from
-     * the fields it covers.
+     * The user confirms an action id, not a digest. That is enough because an
+     * action is immutable from the moment it is prepared: a different recipient,
+     * subject, body or attachment set is a *different* action with a different
+     * id, and the old one is discarded rather than edited. So an id names
+     * exactly one snapshot for its whole life, and a screen that has gone stale
+     * can only point at an action that is no longer `awaiting_local_approval` —
+     * which the status check below refuses on its own.
+     *
+     * `verifyStoredBinding` (invariant 12) still runs, one layer further in: it
+     * asks whether the stored record is internally consistent, which is a
+     * question about the gateway's own files rather than about the user.
      */
-    async approve(actionId: string, expectedBindingHash: string): Promise<ActionRecord> {
+    async approve(actionId: string): Promise<ActionRecord> {
         const action = this.actions.get(actionId);
         if (!action) {
             throw new UnknownActionError(`Aktion ${actionId} ist unbekannt.`);
@@ -109,15 +109,6 @@ export class ActionExecutor {
         if (Date.parse(action.expiresAt) <= Date.now()) {
             await this.actions.transition(actionId, 'expired', { reason: 'action_expired' });
             throw new ApprovalConflictError(`Aktion ${actionId} ist abgelaufen.`);
-        }
-        if (!safeEqual(expectedBindingHash, action.bindingHash)) {
-            await this.audit.record('action_binding_mismatch', {
-                actionId,
-                detail: { expected: action.bindingHash, submitted: expectedBindingHash, phase: 'approve' }
-            });
-            throw new ApprovalConflictError(
-                'Die angezeigte Aktion stimmt nicht mehr mit der gespeicherten Aktion überein. Bitte neu prüfen.'
-            );
         }
         const verification = verifyStoredBinding(action);
         if (!verification.ok) {
@@ -134,6 +125,13 @@ export class ActionExecutor {
                     ? 'Die Ressourcenmenge der Aktion ist inkonsistent gespeichert und wurde nicht ausgeführt.'
                     : 'Die Aktion ist inkonsistent gespeichert und wurde nicht ausgeführt.'
             );
+        }
+
+        // The address is vouched for by the act of approving it, so it stops
+        // being a first-time address here rather than after a delivery that may
+        // still fail for reasons that have nothing to do with the recipient.
+        if (action.plan.kind === 'send_resource' && action.plan.recipientAddress) {
+            await this.recipients.remember(action.plan.targetId, action.plan.recipientAddress);
         }
 
         await this.audit.record('action_approved', {
@@ -306,12 +304,14 @@ export class ActionExecutor {
     }
 
     /**
-     * Produces the bytes to send.
+     * Produces the bytes to send: the ones staged at prepare time, checked once
+     * more against the approved plan.
      *
-     * Normally they are the ones staged at prepare time. After a restart the
-     * staging map is empty, so every file is re-read and compared against the
-     * approved ordered plan. Any difference abandons the whole transfer rather
-     * than sending content the user never approved.
+     * There is no re-read path. Staging lives in memory for the lifetime of the
+     * process, and `ActionStore.load()` expires every action that was still open
+     * when the process ended — so an approvable action always has its bytes
+     * here. Their absence is therefore not "after a restart" but a bug, and the
+     * honest response to a bug at this point is to send nothing.
      */
     private async materialiseAttachments(
         action: ActionRecord,
@@ -326,61 +326,27 @@ export class ActionExecutor {
         }
 
         const staged = this.staged.get(action.actionId);
-        if (staged) {
-            if (staged.length !== planned.length) {
-                throw new ResourceSetChangedError(
-                    'Die bereitgestellte Ressourcenmenge weicht von der freigegebenen Aktion ab.'
-                );
-            }
-            return staged.map((file, index) => {
-                const expected = planned[index]!;
-                if (
-                    file.bytes.byteLength !== expected.byteSize ||
-                    !safeEqual(sha256Bytes(file.bytes), expected.sha256)
-                ) {
-                    throw new ResourceSetChangedError(
-                        'Die bereitgestellten Daten weichen von der freigegebenen Aktion ab.'
-                    );
-                }
-                return {
-                    filename: expected.filename,
-                    mimeType: expected.mimeType,
-                    bytes: file.bytes
-                };
-            });
+        if (!staged || staged.length !== planned.length) {
+            throw new ResourceSetChangedError(
+                'Die bereitgestellte Ressourcenmenge weicht von der freigegebenen Aktion ab.'
+            );
         }
-
-        const attachments: EgressAttachment[] = [];
-        for (const [index, { record, source }] of resolved.entries()) {
-            let file: SourceFile;
-            try {
-                file = await source.fetchOriginal(record.locator.nativeId);
-            } catch {
-                throw new Error('Mindestens eine Ressource konnte nicht erneut geladen werden.');
-            }
-            if (!isSafeAttachment(file)) {
-                throw new ResourceSetChangedError(
-                    'Die erneut geladene Ressourcenmenge enthält unsichere Anhangsmetadaten.'
-                );
-            }
+        return staged.map((file, index) => {
             const expected = planned[index]!;
             if (
-                file.filename !== expected.filename ||
-                file.mimeType !== expected.mimeType ||
                 file.bytes.byteLength !== expected.byteSize ||
                 !safeEqual(sha256Bytes(file.bytes), expected.sha256)
             ) {
                 throw new ResourceSetChangedError(
-                    'Die Ressourcenmenge hat sich seit der Freigabe geändert.'
+                    'Die bereitgestellten Daten weichen von der freigegebenen Aktion ab.'
                 );
             }
-            attachments.push({
+            return {
                 filename: expected.filename,
                 mimeType: expected.mimeType,
                 bytes: file.bytes
-            });
-        }
-        return attachments;
+            };
+        });
     }
 
     /**

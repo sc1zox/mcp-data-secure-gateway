@@ -170,7 +170,7 @@ describe('summarize_resource über MCP', () => {
 
         const view = harness.orchestrator.localAction(state.action_id);
         assert.ok(view?.kind === 'summarize_resource');
-        await harness.orchestrator.approveAction(state.action_id, view.bindingHash);
+        await harness.orchestrator.approveAction(state.action_id);
         await harness.orchestrator.awaitActionDecision(state.action_id, 5);
 
         const after = await call(client, 'get_summary', { action_id: state.action_id });

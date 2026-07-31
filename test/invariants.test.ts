@@ -182,7 +182,7 @@ describe('Invariante 6: nur lokal konfigurierte Ziele', () => {
         assert.equal(view.target.dynamicRecipient, true);
         assert.equal(view.target.recipientDisplay, 'jobs@unternehmen.example');
 
-        await orchestrator.approveAction(prepared.action_id, view.bindingHash);
+        await orchestrator.approveAction(prepared.action_id);
         await waitForAction(orchestrator, prepared.action_id, ['completed']);
 
         assert.equal(target.delivered.length, 1);
@@ -219,7 +219,7 @@ describe('Invariante 7: jede Übertragung braucht eine lokale Freigabe', () => {
 
         const view = orchestrator.localAction(prepared.action_id);
         assert.ok(view);
-        await orchestrator.approveAction(prepared.action_id, view.bindingHash);
+        await orchestrator.approveAction(prepared.action_id);
         await waitForAction(orchestrator, prepared.action_id, ['completed']);
 
         assert.equal(target.delivered.length, 1);
@@ -248,8 +248,8 @@ describe('Invariante 7: jede Übertragung braucht eine lokale Freigabe', () => {
 });
 
 describe('Invariante 12: freigegebene Aktionen sind unveränderlich', () => {
-    it('verweigert die Freigabe, wenn die angezeigte Bindung nicht passt', async () => {
-        const { orchestrator, target } = await harness();
+    it('verweigert die Freigabe, wenn der gespeicherte Datensatz nicht zu sich selbst passt', async () => {
+        const { orchestrator, actions, target } = await harness();
         const found = await orchestrator.findResource({ query: QUERY, purpose: PURPOSE });
         assert.ok(found.status === 'resolved');
         const prepared = await orchestrator.prepareAction({
@@ -258,12 +258,18 @@ describe('Invariante 12: freigegebene Aktionen sind unveränderlich', () => {
             purpose: PURPOSE
         });
 
+        // The stored plan is edited behind the gateway's back — the one thing the
+        // internal hash still exists to catch, now that the user confirms an id.
+        const stored = actions.get(prepared.action_id);
+        assert.ok(stored?.plan.kind === 'send_resource');
+        stored.plan.subject = 'Etwas ganz anderes';
+
         await assert.rejects(
-            () => orchestrator.approveAction(prepared.action_id, 'a'.repeat(64)),
-            /stimmt nicht mehr/
+            () => orchestrator.approveAction(prepared.action_id),
+            /inkonsistent gespeichert/
         );
         assert.equal(target.delivered.length, 0);
-        assert.equal(orchestrator.getActionStatus(prepared.action_id).status, 'awaiting_local_approval');
+        assert.equal(orchestrator.getActionStatus(prepared.action_id).status, 'failed');
     });
 
     it('lässt einen abgeschlossenen Vorgang nicht erneut wechseln', async () => {
@@ -277,7 +283,7 @@ describe('Invariante 12: freigegebene Aktionen sind unveränderlich', () => {
         });
         const view = orchestrator.localAction(prepared.action_id);
         assert.ok(view);
-        await orchestrator.approveAction(prepared.action_id, view.bindingHash);
+        await orchestrator.approveAction(prepared.action_id);
         await waitForAction(orchestrator, prepared.action_id, ['completed']);
 
         await assert.rejects(
@@ -298,10 +304,10 @@ describe('Invariante 12: freigegebene Aktionen sind unveränderlich', () => {
         const view = orchestrator.localAction(prepared.action_id);
         assert.ok(view);
 
-        await orchestrator.approveAction(prepared.action_id, view.bindingHash);
+        await orchestrator.approveAction(prepared.action_id);
         await waitForAction(orchestrator, prepared.action_id, ['completed']);
         await assert.rejects(
-            () => orchestrator.approveAction(prepared.action_id, view.bindingHash),
+            () => orchestrator.approveAction(prepared.action_id),
             /steht nicht zur Freigabe/
         );
         assert.equal(target.delivered.length, 1, 'genau eine Übertragung');
@@ -346,7 +352,7 @@ describe('Invariante 12: freigegebene Aktionen sind unveränderlich', () => {
             orchestrator as unknown as { actionExecutor: { discard(actionId: string): void } }
         ).actionExecutor.discard(prepared.action_id);
 
-        await orchestrator.approveAction(prepared.action_id, view.bindingHash);
+        await orchestrator.approveAction(prepared.action_id);
         await waitForTerminal(orchestrator, prepared.action_id);
 
         assert.equal(target.delivered.length, 0);
@@ -490,7 +496,7 @@ describe('Invariante 14: lokale Nachvollziehbarkeit', () => {
         });
         const view = orchestrator.localAction(prepared.action_id);
         assert.ok(view);
-        await orchestrator.approveAction(prepared.action_id, view.bindingHash);
+        await orchestrator.approveAction(prepared.action_id);
         await waitForAction(orchestrator, prepared.action_id, ['completed']);
 
         const types = (await audit.tail(200)).map((event) => event.type);
@@ -517,7 +523,7 @@ describe('Invariante 14: lokale Nachvollziehbarkeit', () => {
         });
         const view = orchestrator.localAction(prepared.action_id);
         assert.ok(view);
-        await orchestrator.approveAction(prepared.action_id, view.bindingHash);
+        await orchestrator.approveAction(prepared.action_id);
         await waitForAction(orchestrator, prepared.action_id, ['completed']);
 
         const egress = (await audit.tail(200)).find((event) => event.type === 'egress_performed');
@@ -543,7 +549,7 @@ describe('Fehler beim Ziel', () => {
         assert.ok(view);
 
         target.failDelivery = true;
-        await orchestrator.approveAction(prepared.action_id, view.bindingHash);
+        await orchestrator.approveAction(prepared.action_id);
         await waitForTerminal(orchestrator, prepared.action_id);
 
         assert.equal(target.delivered.length, 0);

@@ -60,12 +60,18 @@ export type ApiAttributes = Record<string, string | string[]>;
 
 // -------------------------------------------------------------------- actions
 
-/** One file that would leave the machine, with the digest of the exact bytes. */
+/**
+ * One file that would leave the machine.
+ *
+ * Named, typed and measured — no digest. The gateway still pins the exact bytes
+ * by their SHA-256 internally and refuses to send anything else, but a hex
+ * string is not something a person can check, and a screen that asks for a
+ * decision should carry only what the decision actually rests on.
+ */
 export interface ApiAttachment {
     filename: string;
     mimeType: string;
     byteSize: number;
-    sha256: string;
 }
 
 /**
@@ -132,17 +138,23 @@ export interface ApiTargetSummary {
     recipientDisplay: string;
     purpose: string;
     dynamicRecipient: boolean;
+    /**
+     * True when this exact address has never been approved for this target
+     * before — the one approval where reading the address *is* the decision
+     * rather than a formality. The UI marks it and asks for a second,
+     * separately worded confirmation.
+     */
+    firstTimeRecipient: boolean;
 }
 
 /**
  * What the gateway may do to the attachments between this approval and the
  * transport, when the target is configured to shrink oversized ones.
  *
- * Shown because the sizes and digests next to it describe the *originals*, and
- * a reader who is not told otherwise will take them for what arrives. The
- * approval does bind this policy — it is part of the plan and therefore of the
- * binding hash — but it does not bind the resulting bytes, and that difference
- * is only honest if it is on screen.
+ * Shown because the sizes next to it describe the *originals*, and a reader who
+ * is not told otherwise will take them for what arrives. The approval does bind
+ * this policy — it is part of the frozen plan — but it does not bind the
+ * resulting bytes, and that difference is only honest if it is on screen.
  */
 export interface ApiTransformPolicy {
     /** Version of the profile catalogue this approval is bound to. */
@@ -157,7 +169,7 @@ export interface ApiTransformPolicy {
 export interface ApiEgressPlan {
     subject?: string;
     body: string;
-    /** The originals. Sizes and digests below are theirs. */
+    /** The originals. The sizes below are theirs. */
     attachments: ApiAttachment[];
     totalBytes: number;
     /**
@@ -178,8 +190,6 @@ export interface ApiEgressPlan {
 export interface ApiActionViewBase {
     actionId: string;
     status: ApiActionStatus;
-    /** Hash over the whole plan. Goes back with the approval to pin it. */
-    bindingHash: string;
     purpose: string;
     createdAt: string;
     expiresAt: string;
@@ -197,8 +207,6 @@ export interface ApiSendActionView extends ApiActionViewBase {
     kind: 'send_resource';
     target: ApiTargetSummary;
     egress: ApiEgressPlan;
-    /** True when the staged bytes are gone (e.g. after a restart) and must be re-read. */
-    needsRefetch: boolean;
 }
 
 /** One category of detail the local model claims to have removed. */
@@ -230,7 +238,6 @@ export interface ApiResidualFinding {
 /** The exact text that would be handed to the cloud agent. */
 export interface ApiSummaryPlan {
     text: string;
-    sha256: string;
     chars: number;
     redactions: ApiRedactionPlaceholder[];
     residuals: ApiResidualFinding[];
@@ -324,7 +331,6 @@ export interface ApiHistoryEntry {
         | {
               kind: 'summarize_resource';
               summaryChars: number;
-              summarySha256: string;
               redactions: ApiRedactionPlaceholder[];
           };
     judgement: ApiJudgement;
@@ -354,7 +360,7 @@ export type ApiAuditEventType =
     | 'action_discarded'
     | 'action_parked'
     | 'action_restored'
-    | 'action_binding_mismatch'
+    | 'resource_state_mismatch'
     | 'egress_performed'
     | 'egress_failed'
     | 'action_expired'
@@ -425,10 +431,18 @@ export interface ApiErrorResponse {
 
 // ------------------------------------------------------------------- requests
 
+/**
+ * What the user confirms: one action, named by its id.
+ *
+ * There is no digest to echo back. An action is immutable once prepared —
+ * changing a recipient, a subject, a body or an attachment produces a new
+ * action and discards the old one — so an id identifies exactly one snapshot
+ * for its whole life. A stale screen can therefore only ever name an action
+ * that has since been decided or expired, and the server refuses those on their
+ * status alone.
+ */
 export interface ApiApproveRequest {
     action_id: string;
-    /** The hash the UI displayed. The server refuses if it no longer matches. */
-    binding_hash: string;
 }
 
 export interface ApiActionRequest {

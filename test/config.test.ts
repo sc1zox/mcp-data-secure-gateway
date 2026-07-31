@@ -5,7 +5,7 @@ import { estimateContextBudget } from '../src/judge/prompts.js';
 import { makeConfig } from './helpers.js';
 
 describe('Konfiguration: lokale Secrets', () => {
-    it('verlangt UI-Token und Telegram-Verschlüsselungsschlüssel', () => {
+    it('verlangt ein UI-Token', () => {
         const raw = structuredClone(makeConfig()) as unknown as Record<string, unknown>;
         raw.approval = {
             host: '127.0.0.1',
@@ -17,14 +17,13 @@ describe('Konfiguration: lokale Secrets', () => {
         assert.throws(() => parseConfig(raw), ConfigError);
     });
 
-    it('verlangt getrennte Secrets', () => {
+    it('verlangt ein hinreichend langes UI-Token', () => {
         const raw = structuredClone(makeConfig()) as unknown as Record<string, unknown>;
         raw.approval = {
             ...(raw.approval as Record<string, unknown>),
-            uiToken: 'same-secret-with-at-least-thirty-two-characters',
-            telegramSettingsKey: 'same-secret-with-at-least-thirty-two-characters'
+            uiToken: 'zu-kurz'
         };
-        assert.throws(() => parseConfig(raw), /unterschiedlich/);
+        assert.throws(() => parseConfig(raw), ConfigError);
     });
 });
 

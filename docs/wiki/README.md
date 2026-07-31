@@ -20,7 +20,7 @@ ist, wird gelöscht statt falsch stehen gelassen.
 - [architecture.md](architecture.md) — der Weg einer Anfrage von `find_resource` bis zur
   Zustellung, wer welche Entscheidung trifft
 - [trust-boundary.md](trust-boundary.md) — was den Rechner verlässt und was nicht
-- [data-and-state.md](data-and-state.md) — die Ablagen unter `dataDir`, der Bindungs-Hash, der
+- [data-and-state.md](data-and-state.md) — die Ablagen unter `dataDir`, die Bindung einer Freigabe, der
   Aktionsstatus
 - [testing.md](testing.md) — Aufbau der Testsuite, wie ein Test für eine neue Invariante entsteht
 - [glossary.md](glossary.md) — deutsche Fachbegriffe des Projekts

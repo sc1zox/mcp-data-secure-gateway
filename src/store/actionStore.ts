@@ -97,7 +97,38 @@ export class ActionStore {
     async load(): Promise<void> {
         await this.store.load();
         await this.recoverInterrupted();
-        await this.expireStale();
+        await this.discardOpen();
+    }
+
+    /**
+     * Drops every action that was still waiting for a decision when the process
+     * stopped.
+     *
+     * An open action is a promise about bytes: `prepare_action` staged the
+     * originals in memory, showed the user their sizes and digests, and the
+     * approval covers exactly those. A restart empties that map, so honouring
+     * such an action later would mean re-reading the files, re-proving they are
+     * unchanged, and re-deciding what to do when they are not — a second,
+     * rarely-taken code path guarding the most dangerous moment in the gateway.
+     *
+     * Expiring them instead costs Hermes one `prepare_action` and removes that
+     * path entirely, along with the possibility of executing something the user
+     * approved before a reboot they may not even remember. Decided actions are
+     * untouched: they are the audit trail.
+     */
+    private async discardOpen(): Promise<void> {
+        for (const record of this.store.all()) {
+            if (record.status !== 'awaiting_local_approval' && record.status !== 'selection_required') {
+                continue;
+            }
+            await this.transition(record.actionId, 'expired', { reason: 'action_expired' });
+            await this.audit.record('action_expired', {
+                actionId: record.actionId,
+                resourceRef: record.resourceRef,
+                targetId: targetIdOf(record.plan),
+                detail: { expiresAt: record.expiresAt, discardedByRestart: true }
+            });
+        }
     }
 
     /**
@@ -174,6 +205,22 @@ export class ActionStore {
 
     all(): ActionRecord[] {
         return this.store.all();
+    }
+
+    /**
+     * Everything still on the user's plate: awaiting a decision, or parked on a
+     * selection while they look at the resource choice again. Both occupy
+     * attention, which is what the open-action ceiling is really rationing.
+     */
+    open(now: Date = new Date()): ActionRecord[] {
+        return this.store
+            .all()
+            .filter(
+                (record) =>
+                    (record.status === 'awaiting_local_approval' ||
+                        record.status === 'selection_required') &&
+                    Date.parse(record.expiresAt) > now.getTime()
+            );
     }
 
     /** Actions still waiting for a human decision, oldest first. */

@@ -18,8 +18,8 @@ import type { TelegramSettingsStore } from './settingsStore.js';
  *
  * It never talks to the store or the executor directly. Every decision goes
  * through `Orchestrator.approveAction` / `rejectAction`, the exact same
- * methods the browser calls, with the exact same binding-hash check — this
- * adapter only produces the two arguments those methods already require.
+ * methods the browser calls and with the exact same checks — this adapter only
+ * supplies the action id those methods already require.
  *
  * `getUpdates` long polling, never a webhook: this process holding private
  * documents does not accept inbound connections, and a webhook would be one.
@@ -28,8 +28,8 @@ export class TelegramApprovalAdapter {
     private readonly log: Logger;
     private readonly client: TelegramHttpClient;
 
-    /** Which bindings already produced a notification, so a restart re-sends but a retried caller does not double-send. */
-    private readonly notifiedBindings = new Set<string>();
+    /** Which actions already produced a notification, so a retried caller does not double-send. */
+    private readonly notifiedActions = new Set<string>();
     /** Live callback tokens, one per delivered message; single-use. */
     private readonly pendingCallbacks = new Map<string, PendingCallback>();
 
@@ -117,15 +117,15 @@ export class TelegramApprovalAdapter {
         if (!this.settings.isActive()) {
             return;
         }
-        if (this.notifiedBindings.has(view.bindingHash)) {
+        if (this.notifiedActions.has(view.actionId)) {
             return;
         }
-        this.notifiedBindings.add(view.bindingHash);
+        this.notifiedActions.add(view.actionId);
         void this.deliver(view).catch(async (error) => {
-            // Allow a later retry (e.g. the next restart, or the next time this
-            // binding is offered again) instead of silently losing the
-            // notification for the lifetime of the process.
-            this.notifiedBindings.delete(view.bindingHash);
+            // Allow a later retry (e.g. the next time this action is offered
+            // again) instead of silently losing the notification for the
+            // lifetime of the process.
+            this.notifiedActions.delete(view.actionId);
             this.lastError = describeError(error);
             this.log.warn('Telegram-Benachrichtigung fehlgeschlagen', { actionId: view.actionId, error: this.lastError });
             await this.audit.record('telegram_delivery_failed', {
@@ -157,7 +157,6 @@ export class TelegramApprovalAdapter {
         }
         this.pendingCallbacks.set(token, {
             actionId: view.actionId,
-            bindingHash: view.bindingHash,
             chatId: settings.chatId,
             messageId: lastMessageId,
             expiresAt: Date.parse(view.expiresAt),
@@ -258,7 +257,7 @@ export class TelegramApprovalAdapter {
 
         try {
             if (parsed.decision === 'approve') {
-                await this.orchestrator.approveAction(pending.actionId, pending.bindingHash);
+                await this.orchestrator.approveAction(pending.actionId);
                 await this.finish(callback, pending, '✅ Freigegeben.');
             } else {
                 await this.orchestrator.rejectAction(pending.actionId, false);
@@ -318,7 +317,6 @@ export class TelegramApprovalAdapter {
 
 interface PendingCallback {
     actionId: string;
-    bindingHash: string;
     chatId: string;
     messageId?: number;
     expiresAt: number;
@@ -410,7 +408,6 @@ function renderFullText(view: LocalActionView): string {
         lines.push(`Anhänge (${view.egress.attachments.length}, gesamt ${view.egress.totalBytes} Bytes):`);
         view.egress.attachments.forEach((attachment, index) => {
             lines.push(`${index + 1}. ${attachment.filename} — ${attachment.mimeType}, ${attachment.byteSize} Bytes`);
-            lines.push(`   sha256: ${attachment.sha256}`);
         });
         if (view.egress.optimization) {
             // Same reason the web dialog says it: the sizes and digests just
@@ -423,12 +420,8 @@ function renderFullText(view: LocalActionView): string {
                     'Größen und Prüfsummen oben sind die der Originale.'
             );
         }
-        if (view.needsRefetch) {
-            lines.push('Hinweis: Die Anhänge werden bei Freigabe erneut aus der Quelle gelesen und geprüft.');
-        }
     } else {
         lines.push(`Zusammenfassung von ${view.summary.model}: ${view.summary.chars} Zeichen`);
-        lines.push(`sha256: ${view.summary.sha256}`);
         if (view.summary.redactions.length > 0) {
             lines.push(`Geschwärzt: ${view.summary.redactions.join(', ')}`);
         }

@@ -9,7 +9,7 @@ Stand: 14728fe9495cd19758e8f71e6f2704dc8fc7044e (2026-07-28)
 Hermes spricht ausschließlich die sieben in `src/mcp/hermesServer.ts` registrierten Werkzeuge an
 (`find_resource`, `list_targets`, `prepare_action`, `summarize_resource`, `get_summary`,
 `get_action_status`, `await_action_decision`). Jeder Aufruf geht von dort in
-`src/core/orchestrator.ts`, das den gesamten Zustand, alle Gates und die Bindungs-Hashes besitzt.
+`src/core/orchestrator.ts`, das den gesamten Zustand und alle Gates besitzt.
 
 Der Orchestrator holt Kandidaten über `src/sources/registry.ts` (die private Quelle, z. B.
 Paperless über MCP), lässt sie über `src/judge/` lokal bewerten und baut jede Antwort an Hermes
@@ -18,13 +18,13 @@ Eine vorbereitete Aktion wartet danach auf eine Entscheidung in der lokalen Frei
 (`src/approval/`), bevor `src/targets/registry.ts` sie tatsächlich zustellt. Optional sendet
 `src/approval/telegramApproval.ts` eine inhaltsfreie Benachrichtigung über dieselbe lokale Ansicht
 an einen fest konfigurierten privaten Telegram-Chat. Ein dort zugelassener Klick führt wie der
-Browserweg in dieselben Orchestrator-Methoden und dieselbe Bindungsprüfung; der Kanal versendet
-keine Originaldateien und gibt nichts frei, dessen Text er nicht gezeigt hat.
+Browserweg in dieselben Orchestrator-Methoden und dieselben Prüfungen; der Kanal versendet keine
+Originaldateien und gibt nichts frei, dessen Text er nicht gezeigt hat.
 
-Referenzen, Aktionen, Auswahlen und Audit laufen append-only über `src/store/`. Die optionale
-Telegram-Konfiguration ist davon getrennt und wird atomar durch
-`src/approval/settingsStore.ts` als authentifiziert verschlüsseltes AES-256-GCM-Envelope ersetzt.
-Der getrennte Master-Key stammt aus der Gateway-Umgebung. Beides kommt ohne Datenbank aus.
+Referenzen, Aktionen, Auswahlen, bekannte Empfänger und Audit laufen append-only über
+`src/store/`; das Audit rotiert innerhalb eines konfigurierten Aufbewahrungsfensters. Die optionale
+Telegram-Konfiguration ist davon getrennt und wird von `src/approval/settingsStore.ts` atomar als
+Klartextdatei mit Modus 0600 ersetzt. Beides kommt ohne Datenbank aus.
 
 ## Wer welche Entscheidung trifft
 
@@ -33,7 +33,7 @@ Der getrennte Master-Key stammt aus der Gateway-Umgebung. Beides kommt ohne Date
 - **Ob etwas als Aktion gilt und welchen Status sie hat**: `src/core/orchestrator.ts`.
 - **Was Hermes zu sehen bekommt**: ausschließlich `src/core/egress.ts`.
 - **Ob eine Aktion ausgeführt wird**: die Freigabe des Nutzers im Browser oder über den optionalen,
-  fest gebundenen Telegram-Kanal in `src/approval/`; beide Wege nutzen dieselbe Bindungsprüfung.
+  fest gebundenen Telegram-Kanal in `src/approval/`; beide Wege nutzen dieselben Prüfungen.
 
 ## Warum die Oberfläche ein eigenes npm-Projekt ist
 

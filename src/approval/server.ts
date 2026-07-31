@@ -229,17 +229,16 @@ export class ApprovalServer {
     }
 
     /**
-     * Approval requires the binding hash the page displayed. That is what makes an
-     * approval specific to the exact resource state, target and payload that were
-     * on screen: if anything changed, the hash no longer matches and the user is
-     * asked to look again instead of releasing something else.
+     * Approval names one action id. An action is immutable once prepared, so the
+     * id is specific to exactly the resource state, target and payload that were
+     * on screen; a page that has gone stale can only name an action that is no
+     * longer awaiting a decision, and the orchestrator refuses those.
      */
     private async handleApprove(req: IncomingMessage, res: ServerResponse): Promise<void> {
         const body = await readJsonBody(req);
         const actionId = stringField(body, 'action_id');
-        const bindingHash = stringField(body, 'binding_hash');
-        if (!actionId || !bindingHash) {
-            sendJson(res, 400, { error: 'action_id und binding_hash sind erforderlich.' });
+        if (!actionId) {
+            sendJson(res, 400, { error: 'action_id ist erforderlich.' });
             return;
         }
         try {
@@ -248,7 +247,7 @@ export class ApprovalServer {
             // it is the only path that has to stay correct; echoing the whole
             // local action view here as well would be a second, unused copy of
             // private document metadata on the wire.
-            await this.orchestrator.approveAction(actionId, bindingHash);
+            await this.orchestrator.approveAction(actionId);
             sendJson(res, 200, { ok: true } satisfies ApiOkResponse);
         } catch (error) {
             if (error instanceof ApprovalConflictError) {
@@ -540,7 +539,6 @@ function toHistoryEntry(record: ActionRecord): ApiHistoryEntry {
                 ? {
                       kind: 'summarize_resource',
                       summaryChars: record.plan.summary.length,
-                      summarySha256: record.plan.summarySha256,
                       redactions: record.plan.redactions
                   }
                 : {
@@ -549,7 +547,9 @@ function toHistoryEntry(record: ActionRecord): ApiHistoryEntry {
                       recipientDisplay: record.plan.recipientDisplay,
                       dynamicRecipient: record.plan.dynamicRecipient,
                       subject: record.plan.subject,
-                      attachments: record.plan.attachments
+                      attachments: record.plan.attachments.map(
+                          ({ filename, mimeType, byteSize }) => ({ filename, mimeType, byteSize })
+                      )
                   },
         judgement: record.judgement
     };

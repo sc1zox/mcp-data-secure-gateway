@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { newEventId } from '../util/ids.js';
@@ -6,12 +6,20 @@ import { newEventId } from '../util/ids.js';
 /**
  * Local, append-only trail of every decision the gateway made (invariant 14).
  *
- * Unlike the reference and action stores this file is never compacted and has
- * no delete path: the point of the record is that it survives the thing it
- * describes. Entries may contain internal ids and full egress payloads, because
- * they exist so the user can reconstruct afterwards exactly what left the
- * machine and on whose authority.
+ * Append-only within a retention window, not forever. Entries carry internal
+ * ids and enough of an egress payload to reconstruct what left the machine and
+ * on whose authority — never a document's content, never a summary's text,
+ * never a message body — and a file of those growing without bound is itself a
+ * privacy problem: it accumulates a picture of the user's affairs that nobody
+ * chose to keep. `prune` therefore drops entries past `retentionDays` and
+ * caps the file at `maxEntries`, oldest first.
  */
+
+/** How much history the trail keeps. Both bounds apply; whichever bites first wins. */
+export interface AuditRetention {
+    retentionDays: number;
+    maxEntries: number;
+}
 export type AuditEventType =
     | 'gateway_started'
     | 'gateway_stopped'
@@ -36,7 +44,8 @@ export type AuditEventType =
     | 'action_parked'
     /** Un-parked after the user confirmed the resource it already carried. */
     | 'action_restored'
-    | 'action_binding_mismatch'
+    /** A referenced resource changed in the source since the reference was minted. */
+    | 'resource_state_mismatch'
     | 'egress_performed'
     | 'egress_failed'
     | 'action_expired'
@@ -64,10 +73,19 @@ export interface AuditEvent {
 export class AuditLog {
     private writeChain: Promise<void> = Promise.resolve();
 
-    constructor(private readonly filePath: string) {}
+    constructor(
+        private readonly filePath: string,
+        /**
+         * Absent means "keep everything", which is what the tests and any
+         * embedding without a configured window get. The gateway always passes
+         * one — see `index.ts`.
+         */
+        private readonly retention?: AuditRetention
+    ) {}
 
     async init(): Promise<void> {
         await mkdir(dirname(this.filePath), { recursive: true });
+        await this.prune();
     }
 
     record(type: AuditEventType, fields: Omit<AuditEvent, 'eventId' | 'ts' | 'type'> = {}): Promise<void> {
@@ -91,6 +109,53 @@ export class AuditLog {
         // deliberately fire-and-forget in places, so on a fresh trail the very
         // events a reader is asking about are exactly the ones still queued.
         await this.writeChain;
+        const events = await this.readAll();
+        return events.slice(-limit).reverse();
+    }
+
+    /**
+     * Drops entries the configured window no longer covers, oldest first.
+     *
+     * Runs on the same write chain as `record`, because it rewrites the file
+     * an append would otherwise be extending. Entries without a parseable
+     * timestamp are kept: the point is to forget deliberately, and a line the
+     * pruner cannot date is not a line it should be deciding about.
+     *
+     * Returns how many entries were removed.
+     */
+    async prune(): Promise<number> {
+        if (!this.retention) {
+            return 0;
+        }
+        const { retentionDays, maxEntries } = this.retention;
+        const next = this.writeChain.then(async () => {
+            const events = await this.readAll();
+            if (events.length === 0) {
+                return 0;
+            }
+            const cutoff = Date.now() - retentionDays * 86_400_000;
+            const withinWindow = events.filter((event) => {
+                const ts = Date.parse(event.ts);
+                return Number.isNaN(ts) || ts >= cutoff;
+            });
+            const kept = withinWindow.slice(-maxEntries);
+            if (kept.length === events.length) {
+                return 0;
+            }
+            const temporaryPath = `${this.filePath}.tmp`;
+            const serialised = kept.map((event) => `${JSON.stringify(event)}\n`).join('');
+            await writeFile(temporaryPath, serialised, { encoding: 'utf8', mode: 0o600 });
+            await rename(temporaryPath, this.filePath);
+            return events.length - kept.length;
+        });
+        this.writeChain = next.then(
+            () => undefined,
+            () => undefined
+        );
+        return next;
+    }
+
+    private async readAll(): Promise<AuditEvent[]> {
         if (!existsSync(this.filePath)) {
             return [];
         }
@@ -108,6 +173,6 @@ export class AuditLog {
                 continue;
             }
         }
-        return events.slice(-limit).reverse();
+        return events;
     }
 }

@@ -98,7 +98,7 @@ describe('Mehrere Anhänge pro Aktion', () => {
         );
         assert.equal(view.egress.totalBytes, 7);
 
-        await created.orchestrator.approveAction(state.action_id, view.bindingHash);
+        await created.orchestrator.approveAction(state.action_id);
         assert.equal(await waitForTerminal(created.orchestrator, state.action_id), 'completed');
         assert.deepEqual(
             created.target.delivered[0]?.attachments.map((attachment) => [
@@ -127,7 +127,7 @@ describe('Mehrere Anhänge pro Aktion', () => {
         assert.equal(view.resources.length, 1);
         assert.equal(view.egress.attachments.length, 1);
 
-        await created.orchestrator.approveAction(state.action_id, view.bindingHash);
+        await created.orchestrator.approveAction(state.action_id);
         assert.equal(await waitForTerminal(created.orchestrator, state.action_id), 'completed');
         assert.equal(created.target.delivered[0]?.attachments.length, 1);
     });
@@ -153,7 +153,7 @@ describe('Mehrere Anhänge pro Aktion', () => {
         const view = created.orchestrator.localAction(state.action_id);
         assert.ok(view?.kind === 'send_resource');
         assert.equal(view.resources.length, 1);
-        await created.orchestrator.approveAction(state.action_id, view.bindingHash);
+        await created.orchestrator.approveAction(state.action_id);
 
         assert.equal(await waitForTerminal(created.orchestrator, state.action_id), 'completed');
         assert.equal(created.target.delivered[0]?.attachments.length, 1);
@@ -301,7 +301,7 @@ describe('Mehrere Anhänge pro Aktion', () => {
             makeResource({ ...cv, stateToken: 'cv:v2' }),
             letter
         ];
-        await created.orchestrator.approveAction(state.action_id, view.bindingHash);
+        await created.orchestrator.approveAction(state.action_id);
         assert.equal(await waitForTerminal(created.orchestrator, state.action_id), 'failed');
 
         assert.deepEqual(
@@ -312,7 +312,7 @@ describe('Mehrere Anhänge pro Aktion', () => {
         assert.equal(created.target.delivered.length, 0);
     });
 
-    it('persistiert die geordnete Ressourcenbindung und kann alle Bytes neu laden', async () => {
+    it('persistiert die geordnete Ressourcenbindung', async () => {
         const created = await harness({ resources: [cv, letter] });
         configureFiles(created);
         const references = await referencesFor(created);
@@ -326,6 +326,17 @@ describe('Mehrere Anhänge pro Aktion', () => {
             stored?.resourceBindings?.map((binding) => binding.resourceRef),
             references
         );
+    });
+
+    it('versendet nichts, wenn die bereitgestellten Bytes fehlen', async () => {
+        const created = await harness({ resources: [cv, letter] });
+        configureFiles(created);
+        const references = await referencesFor(created);
+        const state = await created.orchestrator.prepareAction({
+            references,
+            target: 'private_mail',
+            purpose: PURPOSE
+        });
 
         const view = created.orchestrator.localAction(state.action_id);
         assert.ok(view?.kind === 'send_resource');
@@ -334,13 +345,14 @@ describe('Mehrere Anhänge pro Aktion', () => {
         ).actionExecutor.discard(state.action_id);
         const fetchesBeforeApproval = created.source.originalFetches.length;
 
-        await created.orchestrator.approveAction(state.action_id, view.bindingHash);
-        assert.equal(await waitForTerminal(created.orchestrator, state.action_id), 'completed');
+        await created.orchestrator.approveAction(state.action_id);
+        assert.equal(await waitForTerminal(created.orchestrator, state.action_id), 'failed');
         assert.deepEqual(
             created.source.originalFetches.slice(fetchesBeforeApproval),
-            ['4711', '4712']
+            [],
+            'ohne bereitgestellte Bytes wird die Quelle nicht erneut gelesen'
         );
-        assert.equal(created.target.delivered[0]?.attachments.length, 2);
+        assert.equal(created.target.delivered.length, 0);
     });
 });
 

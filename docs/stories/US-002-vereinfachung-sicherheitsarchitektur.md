@@ -2,7 +2,7 @@
 
 |                  |                                                                                           |
 | ---------------- | ----------------------------------------------------------------------------------------- |
-| **Status**       | Entwurf                                                                                   |
+| **Status**       | Umgesetzt am 2026-07-31                                                                   |
 | **Angelegt**     | 2026-07-31                                                                                |
 | **Geltung**      | Maßgeblich bis zur Umsetzung, danach durch Produkt- und Architekturdokumentation abgelöst |
 | **Betrifft**     | Sicherheitsinfrastruktur, Aktionsverwaltung, Prompt-Härtung, Freigabeoberfläche, Audit    |
@@ -100,6 +100,14 @@ Das Gateway erstellt stattdessen eine lokale Auswahlanfrage. Der Benutzer wählt
 Damit soll verhindert werden, dass beispielsweise ein Arbeitsvertrag anstelle eines Lebenslaufs verwendet wird.
 
 ## 5. Einfache, unveränderliche Aktions-Snapshots
+
+> **Umsetzungshinweis (2026-07-31).** „Die vorherige Aktion wird verworfen" ist als Beschreibung
+> umgesetzt, nicht als automatisches Verwerfen: Es gibt keinen Bearbeitungsweg, also erzeugt jede
+> Änderung eine neue Aktion mit eigener ID. Die alte automatisch zu verwerfen bräuchte eine
+> Ähnlichkeitsregel („dieselbe Ressourcenmenge, dasselbe Ziel"), die die Story nicht nennt und die
+> zwei legitime, verschiedene Mails zum selben Dokument gegeneinander ausspielen würde. Die
+> Akzeptanzkriterien verlangen sie nicht; begrenzt wird die Ansammlung durch die Obergrenze offener
+> Aktionen aus FR15.
 
 Beim Vorbereiten einer Aktion erstellt das Gateway einen unveränderlichen Snapshot mit mindestens folgenden Informationen:
 
@@ -213,6 +221,15 @@ Zusätzliche Challenge-Response-Verfahren, Nonces oder kryptografisch markierte 
 
 ## 11. Freigabeoberfläche vereinfachen
 
+> **Umsetzungshinweis (2026-07-31).** Nach der Umsetzung von FR6, FR8 und FR9 blieb hier nichts
+> Entfernbares übrig. Die kryptografischen Bestätigungswerte sind mit FR6/FR8 aus der Oberfläche
+> verschwunden, die Prompt-Nonces mit FR9. Die verbliebene Nonce ist die CSP-Style-Nonce über
+> Angulars `ngCspNonce` — genau der Framework-Standardmechanismus, den dieser Abschnitt ausdrücklich
+> erlaubt. Die clientseitige Routenlogik besteht aus zwei Guards und einer vierzeiligen
+> `safeRedirect`-Prüfung gegen Open Redirects; `API_TAB_ROUTES` ist keine überflüssige Validierung,
+> sondern der Grund, warum ein Reload auf `/app/<tab>` nicht mit 404 endet. Alles Weitere steht in
+> der Liste des Beizubehaltenden.
+
 Die lokale Freigabeoberfläche bleibt ausschließlich lokal oder innerhalb eines administrativ kontrollierten Netzes erreichbar.
 
 Beibehalten werden:
@@ -250,6 +267,14 @@ Eine eigene verschlüsselte Konfigurationsdatenbank mit Schlüsselableitung, Mig
 Telegram-Bot-Tokens dürfen weiterhin niemals über die Agentenschnittstelle oder das Audit-Log ausgegeben werden.
 
 ## 13. Erkennung sensibler Inhalte vereinfachen
+
+> **Umsetzungshinweis (2026-07-31).** Die harte Sperre für erkannte Zugangsdaten wurde auf
+> ausdrückliche Entscheidung des Betreibers **nicht** umgesetzt. Sie existierte vorher nicht: Die
+> Mustersuche warnte nur, und `EgressGuard.registerSecret` kennt ausschließlich die Geheimnisse aus
+> der eigenen Konfiguration. Eine Sperre für Zugangsdaten *aus dem Dokument* wäre also neuer Code
+> gewesen. Der Betreiber hält den Fall für praktisch ausgeschlossen; der Systemprompt verlangt das
+> Entfernen von Zugangsdaten weiterhin ausdrücklich, und der Nutzer liest den vollständigen Text vor
+> der Freigabe. Die Lockerung für URLs und Pfade ist umgesetzt.
 
 Zusammenfassungen werden weiterhin lokal erzeugt und vor der Weitergabe an Hermes lokal angezeigt.
 

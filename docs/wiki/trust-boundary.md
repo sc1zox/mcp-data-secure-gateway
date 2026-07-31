@@ -45,12 +45,13 @@ dieselbe Grenze — siehe `README.md`, Abschnitt „Redigierte Zusammenfassungen
 
 ## Was die Grenze durchsetzt
 
-`EgressGuard` (`src/core/egress.ts`) prüft jede Ausgabe gegen registrierte Geheimnisse und gegen
-Strukturmuster wie URLs, Pfade und API-Routen, und verwirft eine Antwort statt sie zu kürzen. Ein
-Versand selbst braucht zusätzlich eine lokale Freigabe mit passendem Bindungs-Hash — siehe
+`EgressGuard` (`src/core/egress.ts`) prüft jede Ausgabe gegen registrierte Geheimnisse und verwirft
+eine Antwort statt sie zu kürzen. Strukturmuster wie URLs, Pfade und API-Routen gelten für jedes
+Feld außer dem Text einer freigegebenen Zusammenfassung: Dort ist ein Locator gewöhnlicher
+Dokumentinhalt, wird als Fund in der Freigabeansicht markiert und vom Nutzer entschieden. Ein
+Versand selbst braucht zusätzlich eine lokale Freigabe — siehe
 [data-and-state.md](data-and-state.md).
 
-Auch UI-Token und Master-Key der verschlüsselten Telegram-Einstellungen sind registrierte
-Geheimnisse. Der Master-Key wird weder persistiert noch an Portal oder Hermes ausgegeben.
+Auch das UI-Token ist ein registriertes Geheimnis, ebenso das gespeicherte Telegram-Bot-Token.
 
 Quelle: `README.md#sicherheitsinvarianten-und-ihre-umsetzung`

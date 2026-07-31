@@ -144,13 +144,6 @@ const REDACTION_LABELS: Readonly<Record<string, string>> = {
                             besonders genau.
                         </p>
                     }
-
-                    <p
-                        class="ltg-mono hash"
-                        matTooltip="Digest genau dieser Zeichen. Vor der Herausgabe erneut geprüft."
-                    >
-                        sha256 {{ action().summary.sha256 }}
-                    </p>
                 </section>
 
                 <!-- 2. Where it came from. -->
@@ -208,11 +201,9 @@ const REDACTION_LABELS: Readonly<Record<string, string>> = {
                     }
                 </section>
 
-                <p
-                    class="ltg-mono binding"
-                    matTooltip="Diese Freigabe bindet an genau diesen Text. Ändert sich etwas, lehnt das Gateway sie ab."
-                >
-                    Freigabebindung {{ action().bindingHash }}
+                <p class="binding">
+                    Freigabe gilt für Aktion {{ action().actionId }} — genau für den Text oben.
+                    Herausgegeben wird ausschließlich, was hier steht.
                 </p>
             </div>
 
@@ -428,15 +419,6 @@ const REDACTION_LABELS: Readonly<Record<string, string>> = {
             color: var(--mat-sys-on-surface-variant);
         }
 
-        .hash {
-            display: block;
-            margin: 1rem 0 0;
-            font-size: 0.72rem;
-            color: var(--mat-sys-on-surface-variant);
-            cursor: help;
-            overflow-wrap: anywhere;
-        }
-
         .open-source {
             display: inline-flex;
             align-items: center;
@@ -487,7 +469,6 @@ const REDACTION_LABELS: Readonly<Record<string, string>> = {
             margin: 0;
             font-size: 0.72rem;
             color: var(--mat-sys-on-surface-variant);
-            cursor: help;
         }
 
         .actions {

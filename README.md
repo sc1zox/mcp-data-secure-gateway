@@ -150,12 +150,12 @@ liefert für jeden davon dieselbe Shell aus; alles andere bleibt 404.
 Im Reiter „Telegram“ lässt sich ein zweiter Entscheidungskanal einrichten. Er ist standardmäßig
 deaktiviert und unabhängig vom Versandziel `private_telegram`: Ein eigener Bot benachrichtigt nur
 über wartende Freigaben und führt eine erlaubte Entscheidung über denselben Orchestrator und
-denselben Bindungs-Hash aus wie das Browserportal. Er versendet keine Originaldateien und ändert
+dieselben Prüfungen aus wie das Browserportal. Er versendet keine Originaldateien und ändert
 die Konfiguration der ausgehenden Ziele nicht.
 
 Telegram ist ein externer Cloud-Dienst und bekommt deshalb nichts, was aus einem privaten Dokument
 gelesen wurde. Es geht dorthin, woran eine wartende Freigabe zu erkennen ist — Dokumentname, Quelle
-und Quellkennung, Medientyp und Größe, Zweck, Ziel und Empfänger, Anhangsnamen mit Prüfsummen sowie
+und Quellkennung, Medientyp und Größe, Zweck, Ziel und Empfänger, Anhangsnamen mit Größen sowie
 die Modellbewertung als Sensibilität und Konfidenz — und bei einer Sendung zusätzlich Betreff und
 Nachrichtentext im Wortlaut. Maßgeblich ist die Herkunft der Zeichen, nicht ihr Empfänger: Betreff
 und Text sind entweder lokal aus Zweck und geprüfter Bezeichnung zusammengestellt oder vom
@@ -172,7 +172,7 @@ bekommt in Telegram nur „Ablehnen“, weil ihre Freigabe genau der Text ist, d
 eine Freigabe wäre die Freigabe von Zeichen, die niemand gelesen hat, und sie wird auch bei
 manipulierten Callback-Daten verweigert. Freigegeben wird sie im Portal. Eine **Sendung** ist in
 Telegram entscheidbar, weil ihr vollständiger Text dort steht; ihre Anhänge sind Dateien und werden
-über Name, Medientyp, Größe und SHA-256 identifiziert, nicht gelesen — wer den Inhalt eines Anhangs
+über Name, Medientyp und Größe identifiziert, nicht gelesen — wer den Inhalt eines Anhangs
 vor der Entscheidung sehen will, öffnet das Portal.
 
 Die Einrichtung erfolgt ausschließlich im token-geschützten lokalen Portal:
@@ -183,19 +183,26 @@ Die Einrichtung erfolgt ausschließlich im token-geschützten lokalen Portal:
 
 Der Token wird nie aus der API zurückgegeben oder erneut ins Formular eingesetzt; ein leeres
 Tokenfeld behält den gespeicherten Wert bei. Chat- und Benutzer-ID erscheinen nach dem Speichern
-nur maskiert. Die Angaben liegen ausschließlich als authentifiziert verschlüsselter
-AES-256-GCM-Payload in `telegram-approval.json` unter `dataDir` mit Dateimodus 0600. Der separate,
-erforderliche Master-Key `approval.telegramSettingsKey` kommt über
-`${TELEGRAM_APPROVAL_SETTINGS_KEY}` aus der Gateway-Umgebung, liegt niemals in dieser Datei und
-wird weder an die Portal-API noch an Hermes gegeben. Salt und Nonce werden bei jedem Speichern neu
-erzeugt; `scrypt` leitet daraus und aus dem Master-Key den AES-Schlüssel ab.
+nur maskiert. Die Angaben liegen in `telegram-approval.json` unter `dataDir`, im Klartext und mit
+Dateimodus 0600 — geschrieben über eine temporäre Datei und erst dann an ihren Platz verschoben.
 
-Beim ersten Start nach einem Upgrade wird eine vorhandene Legacy-Klartextdatei nur geladen, wenn
-sie exakt der bekannten alten Struktur entspricht; sie wird noch während des Starts atomar durch
-Ciphertext ersetzt. Unvollständige, unbekannte oder beschädigte Strukturen sowie ein falscher
-Master-Key brechen den Start ab, ohne alte Werte zu protokollieren. Vor dem Upgrade daher einen
-stabilen Master-Key setzen und sicher verwahren. Geht er verloren, müssen die Telegram-Angaben neu
-eingegeben werden.
+Der Schutz ist die Dateiberechtigung, nicht eine eigene Verschlüsselung. Der Schlüssel dafür müsste
+in derselben Umgebung liegen, für denselben Prozess und denselben Benutzer lesbar; das verschiebt
+das Problem nur und kostet eine Schlüsselableitung, ein Envelope-Format und einen Migrationspfad.
+Wer mehr will, legt `dataDir` auf ein verschlüsseltes Dateisystem — dort gehört diese Frage hin.
+Eine unbekannte, unvollständige oder beschädigte Struktur bricht den Start ab, ohne alte Werte zu
+protokollieren.
+
+**Umstieg von einer früheren Version mit `approval.telegramSettingsKey`.** Der Schlüssel entfällt
+ersatzlos, aber die Reihenfolge ist wichtig, weil `${VAR}`-Platzhalter aufgelöst werden, *bevor* die
+Konfiguration geprüft wird — eine gesetzte Zeile mit fehlender Variable bricht den Start ab:
+
+1. `data/telegram-approval.json` löschen, falls vorhanden. Die Datei liegt noch als Ciphertext vor
+   und lässt sich ohne den Schlüssel nicht mehr lesen; das Gateway sagt das beim Start ausdrücklich
+   und startet nicht weiter.
+2. Die Zeile `telegramSettingsKey` aus `config/gateway.config.json` entfernen.
+3. Erst danach `TELEGRAM_APPROVAL_SETTINGS_KEY` aus der Umgebung nehmen.
+4. Die drei Telegram-Angaben einmal im Portal neu eingeben.
 
 Der Adapter verwendet `getUpdates` mit Long Polling und registriert keinen Webhook oder öffentlich
 erreichbaren Endpunkt. „Deaktivieren“ stoppt das Polling, behält die lokalen Angaben aber für eine
@@ -269,8 +276,8 @@ vorbereitete Aktionen) und ist rein lokal: die Egress-Prüfung weist jede Antwor
    Es wird nichts übertragen; die vollständige Anhangsmenge wartet gemeinsam auf die lokale
    Freigabe.
 4. **Lokale Freigabe** — die Oberfläche zeigt alle Ressourcen und Quellen, Ziel, Zweck, die
-   geplante Aktion, die genauen ausgehenden Daten samt SHA-256, die Bewertungen des lokalen Modells
-   und offene Punkte. Möglich sind: freigeben, ablehnen, bei Einzelaktionen eine andere Ressource
+   geplante Aktion, die genauen ausgehenden Daten mit Dateiname, Medientyp und Größe, die
+   Bewertungen des lokalen Modells und offene Punkte. Möglich sind: freigeben, ablehnen, bei Einzelaktionen eine andere Ressource
    wählen, verwerfen.
 5. **`get_action_status(action_id)`** — `awaiting_local_approval`, `selection_required`,
    `executing`, `completed`, `rejected`, `failed` oder `expired`.
@@ -377,16 +384,22 @@ dass die Grenze gelockert wird, sondern dadurch, dass ein zweiter Weg über dies
 
 Ein Sprachmodell, auch ein lokales, macht dabei Fehler. Der Entwurf rechnet damit statt darauf zu
 hoffen: die Mustersuche ist eine zweite Meinung (E-Mail-Adressen, IBAN, Telefonnummern, Beträge,
-längere Ziffernfolgen, unbekannte Platzhalter) und wird dem Nutzer gezeigt, nicht als Filter
-verwendet. Die Egress-Prüfung dagegen ist hart: enthält ein Entwurf eine URL, einen Pfad oder ein
-registriertes Geheimnis, wird er verworfen und gar nicht erst zur Freigabe vorgelegt.
+längere Ziffernfolgen, Webadressen, Dateipfade, unbekannte Platzhalter) und wird dem Nutzer
+gezeigt, nicht als Filter verwendet.
+
+Webadressen und technische Pfade sperren eine Zusammenfassung nicht mehr. Ein Dokument, das ein
+Repository, eine Firmenwebseite oder `/etc/nginx` erwähnt, ist ein gewöhnliches Dokument, und den
+Text deswegen zu verwerfen hieß, ihn dem Nutzer gar nicht erst zu zeigen — das Gegenteil dessen,
+wie hier sonst entschieden wird. Der Fund wird stattdessen in der Freigabeansicht markiert, und wer
+den Text liest, entscheidet. Ein **registriertes Geheimnis** sperrt weiterhin hart, und für jedes
+andere Egress-Feld gelten die Strukturmuster unverändert: Dort ist ein Locator kein Inhalt, sondern
+ein entwichener interner String.
 
 Weiter gilt:
 
-- **Dasselbe Bindungsprinzip wie bei E-Mails.** Der Bindungs-Hash deckt den Zusammenfassungstext
-  ab; die Freigabe geht mit dem angezeigten Hash zurück, und vor der Herausgabe wird die SHA-256
-  des gespeicherten Textes erneut geprüft. Was der Nutzer gelesen hat, ist was der Agent bekommt —
-  oder es passiert nichts.
+- **Dasselbe Bindungsprinzip wie bei E-Mails.** Die Freigabe gilt für die angezeigte Aktion, und
+  vor der Herausgabe wird die SHA-256 des gespeicherten Textes intern erneut geprüft. Was der
+  Nutzer gelesen hat, ist was der Agent bekommt — oder es passiert nichts.
 - **Kein Weg an der Oberfläche vorbei.** `get_summary` ist der einzige Ausgang, und er öffnet nur
   über `completed`. Eine Zusammenfassungsaktion trägt strukturell kein Ziel und keinen Empfänger:
   sie kann nicht als Versand missverstanden werden, weil ihre Form dafür kein Feld hat.
@@ -411,32 +424,100 @@ des Dokuments zu nennen.
 | 2 | Interne Quellenwerkzeuge werden nicht weitergegeben | `McpSourceClient` ruft Quellwerkzeuge selbst auf; sie werden nie re-exportiert |
 | 3 | Keine Rohdaten an Hermes | `core/egress.ts` baut jede Antwort feldweise nach Whitelist; der einzige Freitext ist eine lokal freigegebene Zusammenfassung, die dieselbe Prüfung passiert |
 | 4 | Nur opake Referenzen | `util/ids.ts` (CSPRNG), Auflösung ausschließlich über `ReferenceStore` |
-| 5 | Kennungen und Zugangsdaten bleiben lokal | `EgressGuard` prüft jede Ausgabe gegen registrierte Geheimnisse und Struktur­muster (URLs, Pfade, API-Routen) |
+| 5 | Kennungen und Zugangsdaten bleiben lokal | `EgressGuard` prüft jede Ausgabe gegen registrierte Geheimnisse und, außerhalb einer freigegebenen Zusammenfassung, gegen Struktur­muster (URLs, Pfade, API-Routen) |
 | 6 | Nur lokal konfigurierte Ziele | `EgressTarget.deliver()` ignoriert `recipient`, außer die Instanz ist explizit mit `allowDynamicRecipient` konfiguriert; nur dort verlangt und verwendet `prepare_action` eine Adresse, stets unverkürzt gezeigt und einzeln freigegeben |
 | 7 | Jede Übertragung braucht eine lokale Freigabe | `Orchestrator.execute()` läuft ausschließlich aus `approveAction()`; `get_summary` gibt nur für `completed` einen Text heraus |
 | 8 | Das lokale Modell kann nichts übertragen | der Judge liefert nur validiertes JSON; er hat keine Referenz auf ein Ziel, und sein einziger Text mit Egress-Bestimmung wartet auf eine Freigabe |
 | 9 | Bei Mehrdeutigkeit kein automatisches Handeln | `ambiguous` und ein außerhalb des Bereichs liegender Kandidat führen beide zu `selection_required` |
 | 10 | Kein Cloud-Fallback | `OllamaClient` hat keinen Ersatzpfad; Ausfall ergibt `local_model_unavailable` |
-| 11 | Inhalte sind Daten, keine Anweisungen | `judge/prompts.ts` umschließt jeden Fremdinhalt mit einem Zufalls-Nonce; das Modell antwortet nur schemagebunden |
-| 12 | Freigegebene Aktionen sind unveränderlich | Bindungs-Hash über (Referenz, Ressourcenzustand, Ziel bzw. Agent, Plan); `ActionStore` erlaubt nur Statuswechsel, Endzustände nie wieder |
+| 11 | Inhalte sind Daten, keine Anweisungen | `judge/prompts.ts` umschließt jeden Fremdinhalt mit einem festen Marker und entfernt diesen Marker vorher aus dem Inhalt; das Modell antwortet nur schemagebunden |
+| 12 | Freigegebene Aktionen sind unveränderlich | eine Aktion wird nach der Vorbereitung nicht mehr bearbeitet; `ActionStore` erlaubt nur Statuswechsel, Endzustände nie wieder, und ein interner Hash prüft den gespeicherten Datensatz vor der Ausführung gegen sich selbst |
 | 13 | Nur notwendige Informationen an Hermes | geschlossener Katalog von Statusgründen und Hinweistexten in `EGRESS_NOTES` |
-| 14 | Alles lokal nachvollziehbar | `AuditLog` als reines Anhänge-Protokoll, sichtbar im Reiter „Protokoll“ |
+| 14 | Alles lokal nachvollziehbar | `AuditLog` als Anhänge-Protokoll innerhalb eines konfigurierten Aufbewahrungsfensters, sichtbar im Reiter „Protokoll“ |
 
-### Zur Bindung einer Freigabe
+### Woran eine Freigabe gebunden ist
 
-Eine Freigabe gilt nur für die konkret angezeigte Kombination. Technisch: die Oberfläche schickt
-den angezeigten Bindungs-Hash zurück; passt er nicht mehr zum gespeicherten Datensatz, wird die
-Freigabe verweigert statt auf etwas anderes angewendet. Zusätzlich wird vor der Vorbereitung und
-unmittelbar vor der Ausführung die **gesamte** geordnete Ressourcenmenge geprüft. Erst wenn alle
-Metadatenprüfungen abgeschlossen und alle Zustände unverändert sind, werden die freigegebenen Bytes
-zusammengestellt; ein in Paperless nachträglich bearbeitetes Dokument bricht die komplette Aktion
-ab, ohne dass ein Teil versandt wird.
+Eine Freigabe gilt für genau die angezeigte Aktion, und der Nutzer bestätigt sie über deren
+Aktions-ID. Das reicht, weil eine Aktion nach ihrer Vorbereitung nicht mehr verändert wird: Ein
+anderer Empfänger, ein anderer Betreff, ein anderer Text, eine andere Anhangsmenge — jedes davon
+ergibt eine **neue** Aktion mit eigener ID. Eine ID benennt damit ihr Leben lang genau einen
+Stand, und eine veraltete Ansicht kann nur auf eine Aktion zeigen, die längst entschieden oder
+abgelaufen ist. Genau die weist das Gateway schon anhand ihres Status ab.
 
-Der Hash deckt bei einem Versand Mitgliedschaft, Reihenfolge und Zustands-Hash jeder Referenz sowie
-die geordnete Anhangsliste mit Dateiname, Medientyp, Größe und SHA-256 ab. Er benennt auch, wohin
-die Freigabe gilt: eine Zielkennung bei einem Versand, `cloud_agent` bei einer Zusammenfassung.
-Ein gespeicherter Plan kann dadurch weder umsortiert oder ergänzt noch als die jeweils andere Art
-Aktion gelesen werden.
+Es gibt weiterhin einen internen Hash über Referenzen, Ressourcenzustände, Ziel und Plan. Er ist
+keine Benutzerinteraktion mehr, sondern eine Selbstprüfung: Vor der Ausführung muss der
+gespeicherte Datensatz noch zu ihm passen, sonst wird nichts ausgeführt. Angezeigt wird er nicht —
+eine Hexfolge ist nichts, was ein Mensch nachrechnen kann, und ein Freigabedialog sollte nur
+tragen, worauf die Entscheidung tatsächlich beruht.
+
+Zusätzlich wird vor der Vorbereitung und unmittelbar vor der Ausführung die **gesamte** geordnete
+Ressourcenmenge geprüft. Erst wenn alle Metadatenprüfungen abgeschlossen und alle Zustände
+unverändert sind, werden die freigegebenen Bytes zusammengestellt; ein in Paperless nachträglich
+bearbeitetes Dokument bricht die komplette Aktion ab, ohne dass ein Teil versandt wird.
+
+### Offene Aktionen überleben keinen Neustart
+
+Wartet eine Aktion beim Beenden noch auf eine Entscheidung, wird sie beim nächsten Start als
+abgelaufen markiert. Eine offene Aktion ist ein Versprechen über konkrete Bytes: `prepare_action`
+hat die Originale im Speicher bereitgelegt und ihre Größen angezeigt, und die Freigabe gilt genau
+dafür. Nach einem Neustart ist diese Ablage leer — die Aktion später einzulösen hieße, die Dateien
+erneut zu lesen, ihre Unverändertheit erneut zu beweisen und einen zweiten, selten begangenen
+Codepfad im gefährlichsten Moment des Gateways zu unterhalten. Hermes bereitet stattdessen neu vor;
+das kostet einen Aufruf. Entschiedene Aktionen bleiben unangetastet, sie sind das Protokoll.
+
+### Schutz gegen Freigabeflut
+
+Der realistische Angriff auf eine menschliche Freigabe ist nicht der gefälschte Hash, sondern die
+Menge: fünfzig plausibel aussehende Anfragen in einer Minute, jede für sich vertretbar, bis der
+Nutzer aufhört zu lesen. Wer ungelesen freigibt, hat jeden Schutz dieses Gateways verloren, und
+keine Prüfung weiter innen holt das zurück.
+
+Drei Schranken stehen deshalb **vor** jedem Quellzugriff und vor jeder lokalen Inferenz — eine
+Ablehnung kostet das Gateway damit nichts, was sie in einer Schleife überstehen lässt:
+
+| Einstellung | Standard | Wirkung |
+| --- | --- | --- |
+| `approval.maxOpenActions` | 5 | So viele Aktionen dürfen gleichzeitig auf eine Entscheidung warten. Geparkte Aktionen zählen mit, denn auch sie liegen beim Nutzer. |
+| `approval.maxPreparedPerWindow` | 10 | So viele Aktionen darf der Agent im Fenster vorbereitet haben. |
+| `approval.rateLimitWindowSeconds` | 600 | Länge dieses Fensters. |
+
+Gezählt werden nur tatsächlich entstandene Aktionen, keine Versuche: Sonst würde eine
+Wiederholungsschleife den Nutzer von der Arbeit aussperren, die er eigentlich wollte. Hermes erhält
+`rate_limited` beziehungsweise `too_many_open_actions` aus dem geschlossenen Hinweiskatalog.
+
+Eine Anfrage, die einer bereits offenen **in jedem Feld** gleicht — dieselbe geordnete
+Referenzmenge, dasselbe Ziel, derselbe Empfänger, Betreff, Text und Hinweis —, wird mit
+`duplicate_action` abgelehnt, statt dieselbe Entscheidung ein zweites Mal vorzulegen. Verglichen
+wird die Anfrage, nicht der fertige Plan: Ein lokal verfasster Nachrichtentext trägt einen
+Zeitstempel und wäre nie zweimal byte-gleich. Der Vergleich ist bewusst exakt. Eine unscharfe
+Regel bräuchte eine Schwelle, die niemand begründen kann, und würde anfangen, legitime Arbeit
+abzulehnen — zwei verschiedene Mails zum selben Dokument etwa.
+
+Die Duplikatserkennung ist damit ausdrücklich **nicht** der Schutz gegen Flutung: Zur Anfrage
+gehören die Referenzen, und jede neue `find_resource` prägt frische. Ein Agent, der abwechselnd
+sucht und vorbereitet, erzeugt lauter verschiedene Anfragen. Was ihn bremst, sind die beiden
+Schranken oben; die Duplikatserkennung erspart dem Nutzer, dieselbe Entscheidung zweimal
+vorgelegt zu bekommen.
+
+Ändert der Agent Empfänger, Ziel, Betreff, Text oder Anhänge, entsteht eine eigene Aktion mit
+eigener ID. Die vorherige wird nicht automatisch verworfen: Es gibt keinen Bearbeitungsweg, und
+welche der beiden gelten soll, entscheidet der Nutzer. Die Obergrenze offener Aktionen ist das,
+was die Ansammlung begrenzt.
+
+### Erstmals verwendete Empfänger
+
+Bei einem Ziel mit `allowDynamicRecipient` nennt der Agent die Adresse. Beim zweiten Mal ist deren
+Prüfung Routine — beim **ersten** Mal ist sie die ganze Entscheidung. Das Gateway merkt sich
+deshalb, welche Adressen je freigegeben wurden, und hebt eine unbekannte in der Freigabeansicht
+eigens hervor. Der Bestätigungsdialog verlangt dann eine zweite, anders formulierte Zusage: „Ich
+habe die Adresse geprüft" und „mir ist bewusst, dass hierhin zum ersten Mal etwas geht" sind zwei
+verschiedene Aussagen, und ein einzelnes Häkchen, das man vierzig Mal gesetzt hat, wird nicht mehr
+gelesen.
+
+Gemerkt wird beim Freigeben, nicht beim Zustellen: Was eine Adresse bekannt macht, ist dass ein
+Mensch sie gelesen und bejaht hat; ein späterer Transportfehler nimmt das nicht zurück. Gespeichert
+wird nur ein Digest je Ziel und Adresse — gefragt wird ohnehin nur nach Gleichheit.
+
 
 ## Mehrere Anhänge
 
@@ -520,13 +601,13 @@ vor dem Transport. Das ist eine bewusste Entscheidung darüber, was eine Freigab
 | Die Freigabe bindet | Die Freigabe bindet **nicht** |
 | --- | --- |
 | Ziel, Empfänger, Betreff, Nachrichtentext | die Größe des späteren Derivats |
-| die ausgewählten Originalressourcen | dessen SHA-256-Prüfsumme |
-| Dateinamen, Medientypen, Hashes der Originale | interne PDF-Metadaten |
+| die ausgewählten Originalressourcen | dessen SHA-256-Prüfsumme (intern geführt) |
+| Dateinamen, Medientypen, Größen der Originale | interne PDF-Metadaten |
 | erlaubte Formate, höchstes erlaubtes Profil, Version der Policy | die exakte Byte-Repräsentation |
 
-Die Policy steht im gespeicherten Plan und geht damit in den Bindungs-Hash ein. Eine Aktion, die
-mit `balanced` freigegeben wurde, kann nicht später mit `compact` ausgeführt werden: das änderte
-den Hash, und `verifyStoredBinding` weist den Datensatz ab. Ein zweites Freigabe-Gate für die
+Die Policy steht im gespeicherten Plan und geht damit in den internen Bindungs-Hash ein. Eine
+Aktion, die mit `balanced` freigegeben wurde, kann nicht später mit `compact` ausgeführt werden:
+das änderte den Hash, und `verifyStoredBinding` weist den Datensatz ab. Ein zweites Freigabe-Gate für die
 Kompression gibt es nicht — wer die Aktion freigibt, gibt diese Obergrenze mit frei.
 
 Konfiguration am Ziel:
@@ -589,7 +670,9 @@ freigegeben war.
 > gestern vorbereitete Aktion heute unter Einstellungen, denen niemand zugestimmt hat.
 
 Die Freigabeoberfläche zeigt jede lokale Ressource mit Quelle, Kennung, Link, Inhaltsgrundlage und
-eigener Modellbewertung sowie jeden ausgehenden Anhang mit Dateiname, Medientyp, Größe und SHA-256.
+eigener Modellbewertung sowie jeden ausgehenden Anhang mit Dateiname, Medientyp und Größe. Die
+SHA-256 der Originale bleibt intern: Sie wird vor dem Versand geprüft, ist aber nichts, was ein
+Mensch nachrechnen kann.
 Der Bestätigungsdialog wiederholt die vollständige Ressourcen- und Anhangsmenge. Erst ein Klick auf
 diese eine vollständige Aktion erlaubt den Versand; eine Einzelressource einer Mehrfachaktion lässt
 sich nicht nachträglich austauschen.
@@ -617,8 +700,10 @@ Konfiguration kommt. Für Fälle mit wechselndem Empfänger — das Musterbeispi
 - Die lokale Freigabeansicht zeigt die Adresse unverkürzt und optisch hervorgehoben, weil sie —
   anders als bei einem fest konfigurierten Ziel — nicht aus der lokalen Konfiguration stammt,
   sondern vom Agenten vorgeschlagen wurde.
-- Der Bindungs-Hash deckt die Adresse mit ab: Eine Freigabe gilt für genau diese Adresse, nicht für
-  „irgendeine, die der Agent später nennt“.
+- Die Adresse steht im eingefrorenen Plan: Eine Freigabe gilt für genau diese Adresse, nicht für
+  „irgendeine, die der Agent später nennt“. Eine andere Adresse ist eine andere Aktion.
+- Eine Adresse, die hier noch nie freigegeben wurde, wird eigens hervorgehoben und verlangt im
+  Bestätigungsdialog eine zweite, anders formulierte Zusage.
 - Ohne lokale Bestätigung genau dieser Adresse wird nichts versendet — das Freigabe-Erfordernis aus
   Invariante 7 gilt unverändert.
 
@@ -647,13 +732,24 @@ Alles unter `dataDir` (Standard `./data`), bewusst ohne Datenbank und ohne nativ
 | `references.jsonl` | Zuordnung opake Referenz → echte Ressource |
 | `actions.jsonl` | vorbereitete und entschiedene Aktionen, samt Nachrichtentext bzw. Zusammenfassung |
 | `selections.jsonl` | offene und entschiedene lokale Auswahlen |
-| `audit.jsonl` | Entscheidungsprotokoll, wird nie verdichtet oder gelöscht |
-| `telegram-approval.json` | AES-256-GCM-Ciphertext der portalverwalteten Telegram-Freigabekonfiguration, Modus 0600 |
+| `audit.jsonl` | Entscheidungsprotokoll, rotiert nach `audit.retentionDays` und `audit.maxEntries` |
+| `recipients.jsonl` | Digests bereits freigegebener dynamischer Empfänger; speist die Erstverwendungs-Warnung |
+| `telegram-approval.json` | portalverwaltete Telegram-Freigabekonfiguration im Klartext, Modus 0600 |
 
 Dieses Verzeichnis enthält die Zuordnung zwischen Referenzen und privaten Dokumenten und darf den
-Rechner nicht verlassen. `.gitignore` schließt es aus. Das Protokoll führt von beiden Textsorten
-nur Prüfsumme und Länge: es wird nie verdichtet und nie gelöscht, und eine zweite Kopie privater
-Inhalte mit dieser Aufbewahrung wäre der falsche Ort dafür.
+Rechner nicht verlassen. `.gitignore` schließt es aus. Das Protokoll führt von Nachrichtentext und
+Zusammenfassung nur Prüfsumme und Länge — eine zweite Kopie privater Inhalte wäre hier der falsche
+Ort.
+
+Das Protokoll wächst nicht unbegrenzt. `audit.retentionDays` (Standard 90) und `audit.maxEntries`
+(Standard 50000) begrenzen es; beide Schranken gelten, und es zählt die, die zuerst greift.
+Aufgeräumt wird beim Start und danach im selben Takt wie abgelaufene Aktionen und Referenzen. Ein
+Protokoll ohne Ende ist keine bessere Nachvollziehbarkeit, sondern eine wachsende Sammlung darüber,
+mit wem der Nutzer zu tun hat — bewusstes Vergessen gehört zur Datensparsamkeit, nicht gegen sie.
+
+Empfängeradressen stehen in `recipients.jsonl` nur als Digest. Gefragt wird ohnehin nur nach
+Gleichheit, und eine Klartextliste aller je angeschriebenen Adressen ist ein Bestand, den es nicht
+zu geben braucht.
 
 Der Ollama-Chat läuft als NDJSON-Stream. Das Gateway sammelt lokal ausschließlich
 `message.content`, bis ein terminales `done: true` eintrifft. `localModel.idleTimeoutMs` ist kein
@@ -719,9 +815,8 @@ nicht Interna. `test/helpers.ts` stellt Quelle, Ziel und lokales Modell als Doub
   nicht verwendet — der Approval-Server läuft auf `node:http`, und der MCP-Endpunkt geht nicht
   über den betroffenen Pfad. Ein Fix erfordert einen Downgrade des SDK und wurde nicht gemacht.
 - Die Originaldaten einer vorbereiteten Aktion liegen bis zur Entscheidung im Speicher, damit die
-  Freigabeansicht Größe und Prüfsumme aller tatsächlichen Anhänge nennen kann. Nach einem Neustart
-  ist dieser Zwischenspeicher leer; die vollständige Menge wird dann bei der Freigabe erneut gelesen
-  und jeder Anhang gegen Metadaten, Größe und freigegebene Prüfsumme verglichen.
+  Freigabeansicht Größe und Dateityp aller tatsächlichen Anhänge nennen kann. Ein Neustart verwirft
+  deshalb jede noch offene Aktion; Hermes muss danach neu vorbereiten.
 - Ein Ziel ohne Anhangsunterstützung ist im Modell vorgesehen (`supportsAttachments`), aber beide
   ausgelieferten Ziele können Anhänge, daher gibt es dafür noch keinen Nur-Text-Pfad.
 - Die Volltextsuche von Paperless zerlegt deutsche Komposita nicht. `find_resource` mit

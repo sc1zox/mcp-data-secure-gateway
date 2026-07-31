@@ -243,8 +243,8 @@ describe('Telegram-Freigabekanal: Textprojektion', () => {
         const text = sentText(client);
         assert.ok(!text.includes(view.summary.text));
         assert.ok(!text.includes('Es handelt sich um'));
-        // The integrity data that lets the user match this against the portal stays.
-        assert.ok(text.includes(view.summary.sha256));
+        // What stays is the handle that lets the user find this in the portal.
+        assert.ok(text.includes(view.actionId));
     });
 
     it('teilt eine lange Nachricht in nummerierte Teile und setzt Buttons nur auf den letzten', async () => {
@@ -272,7 +272,7 @@ describe('Telegram-Freigabekanal: Textprojektion', () => {
                       ...original,
                       egress: {
                           ...original.egress,
-                          attachments: Array.from({ length: 120 }, (_unused, index) => ({
+                          attachments: Array.from({ length: 400 }, (_unused, index) => ({
                               ...attachment,
                               filename: `${index}-${attachment.filename}`
                           }))

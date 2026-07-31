@@ -10,9 +10,10 @@ Deutsche Fachbegriffe, wie sie in Bezeichnern und Prosa des Projekts vorkommen.
   Ressource verweist. Die einzige Form, in der Hermes eine Ressource ansprechen kann.
 - **Aktion** — ein vorbereiteter Versand oder eine vorbereitete Zusammenfassung, mit eigenem
   Status und eigener Bindung (`src/core/types.ts`, `ActionRecord`).
-- **Bindungs-Hash** — die Prüfsumme, die eine Freigabe an genau die angezeigte Kombination aus
-  Ressource(n), Zustand, Ziel und Text bindet (`resourceStateHash()`, `computeBindingHash()` in
-  `src/core/orchestrator.ts`).
+- **Bindungs-Hash** — interne Prüfsumme über Ressource(n), Zustand, Ziel und Plan
+  (`resourceStateHash()`, `computeBindingHash()` in `src/core/orchestrator.ts`). Sie prüft den
+  gespeicherten Datensatz vor der Ausführung gegen sich selbst und wird nicht angezeigt; der Nutzer
+  bestätigt eine Aktions-ID.
 - **Freigabe** — die ausdrückliche, lokale Entscheidung des Nutzers, eine Aktion auszuführen. Der
   einzige Weg zur Ausführung (`approveAction()`).
 - **Auswahl** — die lokale Entscheidung zwischen mehreren mehrdeutigen Kandidaten, wenn

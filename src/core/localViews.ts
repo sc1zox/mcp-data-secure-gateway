@@ -25,7 +25,6 @@ import { resourceBindingsOf } from './types.js';
 export interface LocalActionViewBase {
     actionId: string;
     status: ActionRecord['status'];
-    bindingHash: string;
     purpose: string;
     createdAt: string;
     expiresAt: string;
@@ -43,22 +42,47 @@ export interface LocalActionViewBase {
     >;
 }
 
+/**
+ * One attachment as the approval view names it: what it is called, what kind of
+ * file it is, how big. The digest that pins the bytes stays in the plan — it is
+ * how the gateway checks itself, not something a person can verify by reading.
+ */
+export interface LocalPlannedAttachmentView {
+    filename: string;
+    mimeType: string;
+    byteSize: number;
+}
+
 /** A transfer of the original document to a configured target. */
 export interface LocalSendActionView extends LocalActionViewBase {
     kind: 'send_resource';
-    target: { id: string; label: string; recipientDisplay: string; purpose: string; dynamicRecipient: boolean };
+    target: {
+        id: string;
+        label: string;
+        recipientDisplay: string;
+        purpose: string;
+        dynamicRecipient: boolean;
+        /**
+         * True when this exact address has never been approved for this target
+         * before. Only ever meaningful for a dynamic-recipient target — a fixed
+         * one has no address the agent could have chosen.
+         *
+         * Not part of the plan, and deliberately so: it is a fact about the
+         * user's history, evaluated when the page is rendered, not a term of
+         * what leaves the machine.
+         */
+        firstTimeRecipient: boolean;
+    };
     egress: {
         subject?: string;
         body: string;
-        attachments: PlannedAttachment[];
+        attachments: LocalPlannedAttachmentView[];
         totalBytes: number;
         /** How far the attachments may be shrunk before transport. Absent means not at all. */
         optimization?: ApprovedTransformPolicy;
         /** Which of subject and body the cloud agent wrote rather than the gateway. */
         authoredByAgent: { subject: boolean; body: boolean };
     };
-    /** True when the staged bytes are no longer in memory (e.g. after a restart). */
-    needsRefetch: boolean;
 }
 
 /**
@@ -73,7 +97,6 @@ export interface LocalSummaryActionView extends LocalActionViewBase {
     summary: {
         /** Exactly what the agent would receive. */
         text: string;
-        sha256: string;
         chars: number;
         /** Placeholder categories present in the text. */
         redactions: RedactionPlaceholder[];
@@ -133,8 +156,8 @@ export class LocalViewBuilder {
         private readonly references: ReferenceStore,
         private readonly sources: SourceLookup,
         private readonly targets: TargetLookup,
-        private readonly isStaged: (actionId: string) => boolean,
-        private readonly findAction: (actionId: string) => ActionRecord | undefined
+        private readonly findAction: (actionId: string) => ActionRecord | undefined,
+        private readonly isKnownRecipient: (targetId: string, address: string) => boolean
     ) {}
 
     toLocalActionView(action: ActionRecord): LocalActionView {
@@ -175,7 +198,6 @@ export class LocalViewBuilder {
         const base: LocalActionViewBase = {
             actionId: action.actionId,
             status: action.status,
-            bindingHash: action.bindingHash,
             purpose: action.purpose,
             createdAt: action.createdAt,
             expiresAt: action.expiresAt,
@@ -191,7 +213,6 @@ export class LocalViewBuilder {
                 kind: 'summarize_resource',
                 summary: {
                     text: plan.summary,
-                    sha256: plan.summarySha256,
                     chars: plan.summary.length,
                     redactions: plan.redactions,
                     residuals: findResiduals(plan.summary),
@@ -211,12 +232,20 @@ export class LocalViewBuilder {
                 label: descriptor?.label ?? plan.targetId,
                 recipientDisplay: plan.recipientDisplay,
                 purpose: descriptor?.purpose ?? '-',
-                dynamicRecipient: plan.dynamicRecipient
+                dynamicRecipient: plan.dynamicRecipient,
+                firstTimeRecipient:
+                    plan.dynamicRecipient &&
+                    plan.recipientAddress !== undefined &&
+                    !this.isKnownRecipient(plan.targetId, plan.recipientAddress)
             },
             egress: {
                 subject: plan.subject,
                 body: plan.body,
-                attachments: plan.attachments,
+                attachments: plan.attachments.map(({ filename, mimeType, byteSize }) => ({
+                    filename,
+                    mimeType,
+                    byteSize
+                })),
                 // The originals' total. Deliberately not an estimate of what
                 // will be sent after optimization: an estimate would be a
                 // number nobody can hold the gateway to, and the approval binds
@@ -229,8 +258,7 @@ export class LocalViewBuilder {
                 // Older records predate the field; absent means the gateway wrote
                 // both, which is what those actions in fact carry.
                 authoredByAgent: plan.authoredByAgent ?? { subject: false, body: false }
-            },
-            needsRefetch: !this.isStaged(action.actionId)
+            }
         };
     }
 

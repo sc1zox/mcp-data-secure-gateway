@@ -81,10 +81,20 @@ export interface ApproveDialogData {
                     <div class="alarm">
                         <ltg-icon name="alert" [size]="18" />
                         <div>
-                            <p class="alarm-head">Empfänger wurde vom Agenten vorgeschlagen</p>
+                            <p class="alarm-head">
+                                @if (action.target.firstTimeRecipient) {
+                                    Neue Adresse, hier noch nie freigegeben
+                                } @else {
+                                    Empfänger wurde vom Agenten vorgeschlagen
+                                }
+                            </p>
                             <p class="alarm-body">
                                 Diese Adresse steht nicht in deiner lokalen Konfiguration. Prüfe
                                 sie zeichenweise auf Tippfehler und ähnlich aussehende Domains.
+                                @if (action.target.firstTimeRecipient) {
+                                    Es gab hierher noch keine Übertragung, an der du dich
+                                    orientieren könntest.
+                                }
                             </p>
                         </div>
                     </div>
@@ -164,6 +174,12 @@ export interface ApproveDialogData {
                     <mat-checkbox [(ngModel)]="acknowledged">
                         Ich habe die Empfängeradresse geprüft.
                     </mat-checkbox>
+                    @if (action.target.firstTimeRecipient) {
+                        <mat-checkbox [(ngModel)]="firstTimeAcknowledged">
+                            Mir ist bewusst, dass an diese Adresse zum ersten Mal etwas
+                            übertragen wird, und ich will das.
+                        </mat-checkbox>
+                    }
                 }
             }
         </mat-dialog-content>
@@ -314,6 +330,8 @@ export class ApproveDialog {
 
     protected readonly action = this.data.action;
     protected readonly acknowledged = signal(false);
+    /** Second, separate gate. Only shown for an address with no history here. */
+    protected readonly firstTimeAcknowledged = signal(false);
 
     /** The summary plan, or `undefined` for a transfer. Drives the whole layout. */
     protected readonly summary =
@@ -335,14 +353,25 @@ export class ApproveDialog {
     });
 
     /**
-     * Both acknowledgements guard the same thing: a part of the payload that
-     * came from the remote agent or from a model rather than from the user or
-     * the local configuration.
+     * Every acknowledgement here guards the same thing: a part of the payload
+     * that came from the remote agent or from a model rather than from the user
+     * or the local configuration.
+     *
+     * A first-time address needs both boxes, and they are worded differently on
+     * purpose. "I checked the address" and "I know this is the first time" are
+     * two separate claims, and a single checkbox that a user has ticked forty
+     * times before stops being read at all.
      */
     protected readonly canConfirm = computed(() => {
         if (this.action.kind === 'summarize_resource') {
             return this.acknowledged();
         }
-        return !this.action.target.dynamicRecipient || this.acknowledged();
+        if (!this.action.target.dynamicRecipient) {
+            return true;
+        }
+        return (
+            this.acknowledged() &&
+            (!this.action.target.firstTimeRecipient || this.firstTimeAcknowledged())
+        );
     });
 }

@@ -4,6 +4,7 @@ import type { AuditLog } from '../store/auditLog.js';
 import { ActionStore } from '../store/actionStore.js';
 import { ReferenceStore } from '../store/referenceStore.js';
 import { SelectionStore } from '../store/selectionStore.js';
+import { RecipientStore } from '../store/recipientStore.js';
 import type { PrivateSource } from '../sources/source.js';
 import type { EgressTarget } from '../targets/target.js';
 import { sha256Text, safeEqual } from '../util/hash.js';
@@ -38,6 +39,7 @@ import { ResourceGate } from './resourceGate.js';
 import { createOptimizationService } from '../attachments/factory.js';
 import { ActionExecutor, ApprovalConflictError, UnknownActionError } from './actionExecutor.js';
 import { ActionPreparer } from './actionPreparation.js';
+import { PreparationLimiter } from './preparationLimits.js';
 import { SelectionFlow } from './selectionFlow.js';
 import { LocalViewBuilder, type LocalActionView, type LocalSelectionView } from './localViews.js';
 
@@ -106,6 +108,7 @@ export class Orchestrator {
         private readonly references: ReferenceStore,
         private readonly actions: ActionStore,
         private readonly selections: SelectionStore,
+        private readonly recipients: RecipientStore,
         private readonly audit: AuditLog,
         private readonly guard: EgressGuard,
         logger?: Logger
@@ -117,6 +120,7 @@ export class Orchestrator {
             this.actions,
             this.targets,
             this.resourceGate,
+            this.recipients,
             this.audit,
             this.log,
             createOptimizationService(this.config.attachmentOptimization)
@@ -130,7 +134,18 @@ export class Orchestrator {
             this.log,
             this.resourceGate,
             this.refusals,
-            (actionId, files) => this.actionExecutor.stage(actionId, files)
+            (actionId, files) => this.actionExecutor.stage(actionId, files),
+            new PreparationLimiter(
+                {
+                    maxOpenActions: this.config.approval.maxOpenActions,
+                    maxPreparedPerWindow: this.config.approval.maxPreparedPerWindow,
+                    windowSeconds: this.config.approval.rateLimitWindowSeconds
+                },
+                // Both open states count. A parked action is undecided and
+                // still on the user's plate, and `ActionStore.load` already
+                // treats the two together.
+                () => this.actions.open()
+            )
         );
         this.selectionFlow = new SelectionFlow(
             this.config,
@@ -150,8 +165,8 @@ export class Orchestrator {
             this.references,
             this.sources,
             this.targets,
-            (actionId) => this.actionExecutor.isStaged(actionId),
-            (actionId) => this.actions.get(actionId)
+            (actionId) => this.actions.get(actionId),
+            (targetId, address) => this.recipients.isKnown(targetId, address)
         );
         this.actions.onTransition((record) => this.decisionWaiters.wake(record.actionId));
     }
@@ -368,9 +383,9 @@ export class Orchestrator {
         };
     }
 
-    /** Releases an action. Validation and the binding-hash re-check live in `actionExecutor.ts` (invariant 12). */
-    async approveAction(actionId: string, expectedBindingHash: string): Promise<LocalActionView> {
-        const executing = await this.actionExecutor.approve(actionId, expectedBindingHash);
+    /** Releases an action. Validation and the stored-record check live in `actionExecutor.ts` (invariant 12). */
+    async approveAction(actionId: string): Promise<LocalActionView> {
+        const executing = await this.actionExecutor.approve(actionId);
         return this.localViews.toLocalActionView(executing);
     }
 
@@ -421,8 +436,14 @@ export class Orchestrator {
         }
         const expiredSelections = await this.selections.expireStale();
         const prunedReferences = await this.references.pruneExpired();
-        if (expiredActions + expiredSelections + prunedReferences > 0) {
-            this.log.info('Aufräumen abgeschlossen', { expiredActions, expiredSelections, prunedReferences });
+        const prunedAuditEntries = await this.audit.prune();
+        if (expiredActions + expiredSelections + prunedReferences + prunedAuditEntries > 0) {
+            this.log.info('Aufräumen abgeschlossen', {
+                expiredActions,
+                expiredSelections,
+                prunedReferences,
+                prunedAuditEntries
+            });
         }
     }
 

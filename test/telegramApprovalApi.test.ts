@@ -7,7 +7,6 @@ import { TelegramApprovalAdapter } from '../src/approval/telegramApproval.js';
 import type { ApiTelegramApprovalStatus } from '../src/approval/contract.js';
 
 const UI_TOKEN = 'test-ui-token-abcdefgh';
-const ENCRYPTION_KEY = 'test-master-key-with-at-least-thirty-two-characters';
 const PORT = 18790;
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 
@@ -37,13 +36,12 @@ async function bootServer(
             host: '127.0.0.1',
             port: PORT,
             uiToken: 'test-ui-token-with-at-least-thirty-two-characters',
-            telegramSettingsKey: ENCRYPTION_KEY,
             actionTtlSeconds: 1800,
             referenceTtlSeconds: 3600,
             selectionTtlSeconds: 1800
         }
     });
-    const settings = new TelegramSettingsStore(created.dataDir, ENCRYPTION_KEY);
+    const settings = new TelegramSettingsStore(created.dataDir);
     await settings.load();
     const adapter = new TelegramApprovalAdapter(created.orchestrator, created.audit, settings);
     const server = new ApprovalServer(
@@ -203,13 +201,13 @@ describe('Telegram-Freigabekanal: Browserweg bleibt unverändert', () => {
             assert.equal(prepared.status, 'awaiting_local_approval');
 
             const stateResponse = await authed('/api/state');
-            const state = (await stateResponse.json()) as { actions: Array<{ actionId: string; bindingHash: string }> };
+            const state = (await stateResponse.json()) as { actions: Array<{ actionId: string }> };
             const view = state.actions.find((a) => a.actionId === prepared.action_id)!;
             assert.ok(view);
 
             const approveResponse = await authed('/api/approve', {
                 method: 'POST',
-                body: JSON.stringify({ action_id: view.actionId, binding_hash: view.bindingHash })
+                body: JSON.stringify({ action_id: view.actionId })
             });
             assert.equal(approveResponse.status, 200);
         } finally {

@@ -93,7 +93,7 @@ async function prepareAndApprove(created: Harness): Promise<string> {
     );
     const view = created.orchestrator.localAction(prepared.action_id);
     assert.ok(view);
-    await created.orchestrator.approveAction(prepared.action_id, view.bindingHash);
+    await created.orchestrator.approveAction(prepared.action_id);
     return prepared.action_id;
 }
 
@@ -272,7 +272,6 @@ describe('US-001 Gateway: Zielprüfung und Neustart', () => {
                 ],
                 approval: {
                     uiToken: 'test-ui-token-with-at-least-thirty-two-characters',
-                    telegramSettingsKey: 'test-telegram-key-with-at-least-thirty-two-chars!'
                 }
             }).targets[0] as never
         );
@@ -315,5 +314,49 @@ describe('US-001 Gateway: Zielprüfung und Neustart', () => {
         assert.equal(recovered.statusReason, 'delivery_failed');
         assert.match(recovered.localOutcome!, /Neustart/);
         assert.equal(created.target.delivered.length, 0, 'kein automatischer Zweitversand');
+    });
+
+    it('verwirft eine offene Aktion beim Neustart, statt sie freigebbar zu lassen', async () => {
+        const created = await harness();
+        const audit = new AuditLog(join(created.dataDir, 'audit.jsonl'));
+        await audit.init();
+
+        const found = await created.orchestrator.findResource({ query: QUERY, purpose: PURPOSE });
+        assert.ok(found.status === 'resolved');
+        const prepared = await created.orchestrator.prepareAction({
+            reference: found.resource.reference,
+            target: 'private_mail',
+            purpose: PURPOSE
+        });
+        assert.equal(created.actions.get(prepared.action_id)?.status, 'awaiting_local_approval');
+
+        const reopened = new ActionStore(created.dataDir, audit);
+        await reopened.load();
+
+        const revived = reopened.get(prepared.action_id);
+        assert.ok(revived);
+        assert.equal(revived.status, 'expired');
+        assert.equal(revived.statusReason, 'action_expired');
+        assert.equal(reopened.pending().length, 0, 'nach einem Neustart steht nichts mehr zur Freigabe');
+    });
+
+    it('verwirft auch eine auf eine Auswahl geparkte Aktion beim Neustart', async () => {
+        const created = await harness();
+        const audit = new AuditLog(join(created.dataDir, 'audit.jsonl'));
+        await audit.init();
+
+        const found = await created.orchestrator.findResource({ query: QUERY, purpose: PURPOSE });
+        assert.ok(found.status === 'resolved');
+        const prepared = await created.orchestrator.prepareAction({
+            reference: found.resource.reference,
+            target: 'private_mail',
+            purpose: PURPOSE
+        });
+        await created.actions.transition(prepared.action_id, 'selection_required');
+
+        const reopened = new ActionStore(created.dataDir, audit);
+        await reopened.load();
+
+        assert.equal(reopened.get(prepared.action_id)?.status, 'expired');
     });
 });

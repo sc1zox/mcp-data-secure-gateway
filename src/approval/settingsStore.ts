@@ -1,18 +1,24 @@
-import { createCipheriv, createDecipheriv, randomBytes, scrypt as scryptCallback } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { maskChatId } from '../targets/target.js';
 import type { ApiTelegramApprovalStatus, ApiTelegramApprovalUpdateRequest } from './contract.js';
 
 /**
- * Local, separately stored configuration for the optional Telegram approval
- * channel.
+ * Local configuration for the optional Telegram approval channel.
  *
- * The portal-managed payload is encrypted as one authenticated envelope. The
- * master secret is supplied separately through gateway configuration and is
- * never persisted or exposed through the portal API.
+ * Stored as a plain JSON file with mode 0600, next to the other local state.
+ * The bot token in it is a secret, and the protection it gets is the one the
+ * rest of the system already relies on: file permissions on a machine whose
+ * operating system is trusted. Encrypting it here would only move the problem —
+ * the key would have to sit in the same environment, readable by the same
+ * process, for the same user — while adding a key derivation, an envelope
+ * format and a migration path to maintain.
+ *
+ * What the file must never do is leak the token outwards. `toApiStatus` reports
+ * only whether one is stored, `update` never reads one back out, and
+ * `EgressGuard` has the value registered so it cannot appear in anything sent
+ * to Hermes.
  */
 export interface TelegramApprovalSettings {
     enabled: boolean;
@@ -23,28 +29,12 @@ export interface TelegramApprovalSettings {
 
 export class TelegramSettingsValidationError extends Error {}
 
-interface EncryptedEnvelope {
-    version: 1;
-    algorithm: 'aes-256-gcm';
-    kdf: 'scrypt';
-    salt: string;
-    iv: string;
-    authTag: string;
-    ciphertext: string;
-}
-
-const scrypt = promisify(scryptCallback);
-const ENVELOPE_AAD = Buffer.from('local-trust-gateway:telegram-approval:v1', 'utf8');
-
 export class TelegramSettingsStore {
     private settings: TelegramApprovalSettings = { enabled: false };
     private loaded = false;
     private writeChain: Promise<void> = Promise.resolve();
 
-    constructor(
-        private readonly dataDir: string,
-        private readonly masterSecret: string
-    ) {}
+    constructor(private readonly dataDir: string) {}
 
     private get filePath(): string {
         return join(this.dataDir, 'telegram-approval.json');
@@ -59,15 +49,7 @@ export class TelegramSettingsStore {
             } catch {
                 throw new Error(`Telegram-Freigabekonfiguration ${this.filePath} ist beschädigt.`);
             }
-            if (isEncryptedEnvelope(parsed)) {
-                this.settings = await decryptSettings(parsed, this.masterSecret);
-            } else {
-                // Fail closed unless the old file is exactly the legacy shape.
-                // A successful load is immediately rewritten before startup
-                // continues, so no plaintext copy remains at this path.
-                this.settings = parseLegacySettings(parsed);
-                await writeAtomic(this.filePath, await encryptSettings(this.settings, this.masterSecret));
-            }
+            this.settings = parseSettings(parsed);
         }
         this.loaded = true;
     }
@@ -157,7 +139,7 @@ export class TelegramSettingsStore {
     ): Promise<void> {
         const next = this.writeChain.then(async () => {
             const candidate = build(this.settings);
-            await writeAtomic(this.filePath, await encryptSettings(candidate, this.masterSecret));
+            await writeAtomic(this.filePath, candidate);
             this.settings = candidate;
         });
         this.writeChain = next.catch(() => undefined);
@@ -173,17 +155,39 @@ function nonEmpty(value: string | undefined | null): string | undefined {
     return trimmed.length > 0 ? trimmed : undefined;
 }
 
-async function writeAtomic(filePath: string, data: unknown): Promise<void> {
+/**
+ * Written with 0600 and moved into place, so a reader never sees a half-written
+ * file and no copy of the token is left behind under a default umask.
+ */
+async function writeAtomic(filePath: string, data: TelegramApprovalSettings): Promise<void> {
     const temporaryPath = `${filePath}.tmp`;
     await writeFile(temporaryPath, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 });
     await rename(temporaryPath, filePath);
 }
 
-function parseLegacySettings(value: unknown): TelegramApprovalSettings {
+/**
+ * Strict on the way in. A file with unexpected keys, a non-boolean `enabled` or
+ * a half-configured active channel is refused rather than partially honoured:
+ * this file decides whether a bot can approve a data transfer, and "close
+ * enough" is not a state it should ever start in.
+ */
+function parseSettings(value: unknown): TelegramApprovalSettings {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        throw new Error('Telegram-Legacy-Konfiguration hat keine strikt migrierbare Struktur.');
+        throw new Error('Telegram-Freigabekonfiguration hat keine gültige Struktur.');
     }
     const raw = value as Record<string, unknown>;
+    // Named specially because this is the one wrong shape that is *expected*:
+    // a gateway upgraded from the version that encrypted this file. Without
+    // this branch the generic message below aborts startup with "invalid
+    // structure", which is true and useless — the file cannot be read, the
+    // portal never comes up, and the remedy is not guessable from the error.
+    if (isEncryptedEnvelope(raw)) {
+        throw new Error(
+            'Telegram-Freigabekonfiguration liegt in der früheren verschlüsselten Form vor und ' +
+                'kann nicht mehr gelesen werden. Die Datei löschen und die drei Telegram-Angaben ' +
+                'einmal im Portal neu eingeben.'
+        );
+    }
     const allowed = new Set(['enabled', 'botToken', 'chatId', 'allowedUserId']);
     if (
         Object.keys(raw).some((key) => !allowed.has(key)) ||
@@ -192,7 +196,7 @@ function parseLegacySettings(value: unknown): TelegramApprovalSettings {
         !optionalNonEmptyString(raw.chatId) ||
         !optionalNonEmptyString(raw.allowedUserId)
     ) {
-        throw new Error('Telegram-Legacy-Konfiguration hat keine strikt migrierbare Struktur.');
+        throw new Error('Telegram-Freigabekonfiguration hat keine gültige Struktur.');
     }
     const settings: TelegramApprovalSettings = { enabled: raw.enabled };
     if (typeof raw.botToken === 'string') {
@@ -205,13 +209,13 @@ function parseLegacySettings(value: unknown): TelegramApprovalSettings {
         settings.allowedUserId = raw.allowedUserId;
     }
     if (settings.enabled && !(settings.botToken && settings.chatId && settings.allowedUserId)) {
-        throw new Error('Telegram-Legacy-Konfiguration ist unvollständig und wird nicht migriert.');
+        throw new Error('Telegram-Freigabekonfiguration ist unvollständig und wird nicht übernommen.');
     }
     if (
         (settings.chatId !== undefined && !/^-?\d+$/.test(settings.chatId)) ||
         (settings.allowedUserId !== undefined && !/^\d+$/.test(settings.allowedUserId))
     ) {
-        throw new Error('Telegram-Legacy-Konfiguration enthält ungültige Kennungen.');
+        throw new Error('Telegram-Freigabekonfiguration enthält ungültige Kennungen.');
     }
     return settings;
 }
@@ -220,84 +224,11 @@ function optionalNonEmptyString(value: unknown): boolean {
     return value === undefined || (typeof value === 'string' && value.length > 0 && value === value.trim());
 }
 
-async function encryptSettings(
-    settings: TelegramApprovalSettings,
-    masterSecret: string
-): Promise<EncryptedEnvelope> {
-    const salt = randomBytes(16);
-    const iv = randomBytes(12);
-    const key = (await scrypt(masterSecret, salt, 32)) as Buffer;
-    const cipher = createCipheriv('aes-256-gcm', key, iv);
-    cipher.setAAD(ENVELOPE_AAD);
-    const ciphertext = Buffer.concat([
-        cipher.update(JSON.stringify(settings), 'utf8'),
-        cipher.final()
-    ]);
-    return {
-        version: 1,
-        algorithm: 'aes-256-gcm',
-        kdf: 'scrypt',
-        salt: salt.toString('base64'),
-        iv: iv.toString('base64'),
-        authTag: cipher.getAuthTag().toString('base64'),
-        ciphertext: ciphertext.toString('base64')
-    };
-}
-
-async function decryptSettings(
-    envelope: EncryptedEnvelope,
-    masterSecret: string
-): Promise<TelegramApprovalSettings> {
-    try {
-        const salt = decodeBase64(envelope.salt, 16);
-        const iv = decodeBase64(envelope.iv, 12);
-        const authTag = decodeBase64(envelope.authTag, 16);
-        const ciphertext = decodeBase64(envelope.ciphertext);
-        const key = (await scrypt(masterSecret, salt, 32)) as Buffer;
-        const decipher = createDecipheriv('aes-256-gcm', key, iv);
-        decipher.setAAD(ENVELOPE_AAD);
-        decipher.setAuthTag(authTag);
-        const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-        return parseDecryptedSettings(JSON.parse(plaintext.toString('utf8')));
-    } catch {
-        throw new Error('Telegram-Freigabekonfiguration konnte nicht authentifiziert und entschlüsselt werden.');
-    }
-}
-
-function parseDecryptedSettings(value: unknown): TelegramApprovalSettings {
-    try {
-        return parseLegacySettings(value);
-    } catch {
-        throw new Error('Entschlüsselter Telegram-Payload ist ungültig.');
-    }
-}
-
-function isEncryptedEnvelope(value: unknown): value is EncryptedEnvelope {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        return false;
-    }
-    const raw = value as Record<string, unknown>;
-    const keys = ['version', 'algorithm', 'kdf', 'salt', 'iv', 'authTag', 'ciphertext'];
-    return (
-        Object.keys(raw).length === keys.length &&
-        keys.every((key) => Object.hasOwn(raw, key)) &&
-        raw.version === 1 &&
-        raw.algorithm === 'aes-256-gcm' &&
-        raw.kdf === 'scrypt' &&
-        typeof raw.salt === 'string' &&
-        typeof raw.iv === 'string' &&
-        typeof raw.authTag === 'string' &&
-        typeof raw.ciphertext === 'string'
-    );
-}
-
-function decodeBase64(value: string, expectedBytes?: number): Buffer {
-    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
-        throw new Error('Ungültiges Base64.');
-    }
-    const decoded = Buffer.from(value, 'base64');
-    if (decoded.toString('base64') !== value || (expectedBytes !== undefined && decoded.length !== expectedBytes)) {
-        throw new Error('Ungültige Feldlänge.');
-    }
-    return decoded;
+/**
+ * The shape this file had while it was encrypted. Recognised only to produce a
+ * better error — there is no decryption path left, and there should not be one:
+ * the master key it needed no longer exists in the configuration.
+ */
+function isEncryptedEnvelope(raw: Record<string, unknown>): boolean {
+    return raw.algorithm === 'aes-256-gcm' && typeof raw.ciphertext === 'string';
 }

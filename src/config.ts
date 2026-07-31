@@ -263,14 +263,38 @@ const approvalSchema = z.object({
     port: z.number().int().min(1).max(65535).default(8787),
     /** Shared secret for the local UI, supplied through an environment placeholder. */
     uiToken: requiredLocalSecret,
-    /** Master secret for encrypted portal-managed Telegram settings. */
-    telegramSettingsKey: requiredLocalSecret,
     /** Prepared actions die if nobody decides within this window. */
     actionTtlSeconds: z.number().int().min(60).max(86400).default(1800),
     /** References expire independently; a stale ref cannot be revived. */
     referenceTtlSeconds: z.number().int().min(60).max(86400).default(3600),
     /** Pending selections expire too. */
-    selectionTtlSeconds: z.number().int().min(60).max(86400).default(1800)
+    selectionTtlSeconds: z.number().int().min(60).max(86400).default(1800),
+    /**
+     * How many actions may await a decision at once.
+     *
+     * Not a performance knob. The realistic attack on a human gate is volume:
+     * a queue nobody can read carefully is a queue that gets waved through, so
+     * the queue is kept short enough to stay readable.
+     */
+    maxOpenActions: z.number().int().min(1).max(100).default(5),
+    /** Actions the agent may have prepared inside `rateLimitWindowSeconds`. */
+    maxPreparedPerWindow: z.number().int().min(1).max(1000).default(10),
+    rateLimitWindowSeconds: z.number().int().min(10).max(86400).default(600)
+});
+
+/**
+ * How much of the local trail is kept.
+ *
+ * Both bounds apply and whichever bites first wins. A trail that grows without
+ * end is not a stronger record, it is an unmanaged store of who the user deals
+ * with — the retention window is what keeps invariant 14 ("alles lokal
+ * nachvollziehbar") from turning into "alles dauerhaft gesammelt".
+ */
+const auditSchema = z.object({
+    /** Entries older than this are dropped on startup and during housekeeping. */
+    retentionDays: z.number().int().min(1).max(3650).default(90),
+    /** Hard ceiling on the number of entries, applied after the age window. */
+    maxEntries: z.number().int().min(100).max(1_000_000).default(50_000)
 });
 
 const hermesInterfaceSchema = z.object({
@@ -301,6 +325,7 @@ export const configSchema = z.object({
     localModel: localModelSchema,
     targets: z.array(targetSchema).min(1),
     approval: approvalSchema,
+    audit: auditSchema.default({}),
     hermesInterface: hermesInterfaceSchema.default({}),
     attachmentOptimization: attachmentOptimizationSchema
 });
@@ -385,11 +410,6 @@ export function parseConfig(raw: unknown): GatewayConfig {
             `localModel.numPredict (${config.localModel.numPredict}) muss kleiner als ` +
                 `localModel.numCtx (${config.localModel.numCtx}) sein; sonst bleibt kein ` +
                 'Platz für den Prompt.'
-        );
-    }
-    if (config.approval.uiToken === config.approval.telegramSettingsKey) {
-        throw new ConfigError(
-            'approval.uiToken und approval.telegramSettingsKey müssen unterschiedliche Secrets sein.'
         );
     }
     if (config.hermesInterface.transport !== 'stdio' && !config.hermesInterface.http.bearerToken) {

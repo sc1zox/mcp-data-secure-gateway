@@ -62,6 +62,9 @@ export type EgressNoteCode =
     | 'resource_changed'
     | 'action_unknown'
     | 'invalid_request'
+    | 'rate_limited'
+    | 'too_many_open_actions'
+    | 'duplicate_action'
     | 'summary_awaiting_approval'
     | 'summary_released'
     | 'summary_not_released'
@@ -107,6 +110,15 @@ export const EGRESS_NOTES: Record<EgressNoteCode, string> = {
         'Die Ressource hat sich seit der Vorbereitung geändert. Die Aktion muss neu vorbereitet werden.',
     action_unknown: 'Diese Aktionsreferenz ist unbekannt.',
     invalid_request: 'Die Anfrage war unvollständig oder ungültig.',
+    rate_limited:
+        'Es wurden in kurzer Zeit zu viele Aktionen vorbereitet. Später erneut versuchen, ' +
+        'nicht sofort wiederholen.',
+    too_many_open_actions:
+        'Es warten bereits zu viele Aktionen auf die lokale Freigabe. Vor einer weiteren Anfrage ' +
+        'muss der Nutzer die offenen entscheiden.',
+    duplicate_action:
+        'Eine gleichlautende Aktion liegt dem Nutzer bereits zur Freigabe vor. Eine zweite ' +
+        'Anfrage dazu ist nicht nötig; der Status ist über die bestehende Aktionsreferenz abrufbar.',
     summary_awaiting_approval:
         'Eine redigierte Zusammenfassung wurde lokal erstellt und liegt dem Nutzer zur Prüfung vor. ' +
         'Der Text wird erst nach dessen Freigabe herausgegeben; danach ist er mit get_summary abrufbar.',
@@ -205,6 +217,11 @@ export class EgressGuard {
      * finding means an earlier layer is broken, so it throws rather than
      * redacting: silently shipping a partially scrubbed payload would hide the
      * bug and still leak the rest.
+     *
+     * Registered secrets are checked against the whole payload, summary text
+     * included — there is no reading of a configured credential that belongs in
+     * an outgoing message. The structural patterns are checked against
+     * everything *except* a released summary; see `withoutSummary` for why.
      */
     assertClean(payload: unknown, context: string): void {
         const serialised = JSON.stringify(payload ?? null);
@@ -215,13 +232,42 @@ export class EgressGuard {
                 );
             }
         }
-        const suspicious = findSuspiciousPattern(serialised);
+        const suspicious = findSuspiciousPattern(JSON.stringify(withoutSummary(payload) ?? null));
         if (suspicious) {
             throw new EgressViolationError(
                 `Ausgabe an Hermes (${context}) enthält ein verbotenes Muster (${suspicious}). Übertragung abgebrochen.`
             );
         }
     }
+}
+
+/**
+ * The payload minus its `summary`, which is the one field the structural
+ * patterns must not judge.
+ *
+ * Everywhere else in this file a URL or a path is a leak by construction: those
+ * payloads are built from a closed catalogue, so a locator in one can only mean
+ * that an internal string escaped. A summary is different — it is prose a local
+ * model wrote about a document, and a document legitimately mentions a project's
+ * repository, a company's website or a config path like `/etc/nginx`. Refusing
+ * the whole summary for that meant the user never got to see the text and could
+ * not judge it, which is the opposite of how every other decision here works.
+ *
+ * So a locator in a summary is surfaced instead: `findResiduals` flags it, the
+ * approval view shows it, and the person who reads the exact characters decides.
+ * Registered secrets still bar the way, and nothing else in the payload gains
+ * any latitude.
+ */
+function withoutSummary(payload: unknown): unknown {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        return payload;
+    }
+    const record = payload as Record<string, unknown>;
+    if (typeof record.summary !== 'string') {
+        return payload;
+    }
+    const { summary: _released, ...rest } = record;
+    return rest;
 }
 
 export class EgressViolationError extends Error {}
@@ -321,6 +367,15 @@ export interface ResidualFinding {
 const RESIDUAL_PATTERNS: Array<[string, RegExp]> = [
     ['E-Mail-Adresse', /[^\s@]+@[^\s@]+\.[A-Za-z]{2,}/],
     ['IBAN', /\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/],
+    // These two used to bar a summary from ever reaching the approval view.
+    // They are findings now, because a document that talks about a repository
+    // or a server path is an ordinary document, and the person reading the text
+    // is better placed to say whether this particular locator may go out.
+    ['Webadresse', /\bhttps?:\/\/\S+|\bfile:\/\/\S+/i],
+    [
+        'Dateipfad',
+        /\b[A-Za-z]:[\\/]\S*|\\\\[A-Za-z0-9_.-]+\\\S*|(?:^|[\s"'(])\/(?:home|root|etc|var|usr|mnt|media|opt|tmp|srv)\/\S*/
+    ],
     // Anchored on `+` or a leading zero rather than on "digits, separator,
     // digits": the loose form flags any sentence with two numbers in it, and a
     // detector that cries wolf is one the user learns to click past.
