@@ -8,10 +8,17 @@
  * that is the whole reason the map has exactly one owner instead of eight
  * call sites across the orchestrator each remembering to clean up.
  */
+import type { OptimizationService } from '../attachments/factory.js';
+import { untouchedDelivery } from '../attachments/pipeline.js';
+import type {
+    DeliveredAttachment,
+    OptimizationFailureReason,
+    OptimizationInput
+} from '../attachments/types.js';
 import type { ActionStore } from '../store/actionStore.js';
 import type { AuditLog } from '../store/auditLog.js';
 import type { SourceFile } from '../sources/source.js';
-import { TargetDeliveryError, type EgressAttachment } from '../targets/target.js';
+import { TargetDeliveryError, type EgressAttachment, type EgressTarget } from '../targets/target.js';
 import { sha256Bytes, sha256Text, safeEqual } from '../util/hash.js';
 import { describeError, type Logger } from '../util/log.js';
 import { isSafeAttachment } from './attachmentSafety.js';
@@ -40,7 +47,13 @@ export class ActionExecutor {
         private readonly targets: TargetLookup,
         private readonly resourceGate: ResourceGate,
         private readonly audit: AuditLog,
-        private readonly log: Logger
+        private readonly log: Logger,
+        /**
+         * Absent when attachment optimization is switched off engine-wide. An
+         * action whose plan carries no `optimization` policy never reaches it
+         * either way — both are required before a single byte is transformed.
+         */
+        private readonly optimization?: OptimizationService
     ) {}
 
     stage(actionId: string, files: SourceFile[]): void {
@@ -223,11 +236,32 @@ export class ActionExecutor {
             return;
         }
 
+        // Between the approved originals and the transport. Everything before
+        // this point verified that these are the bytes the user approved;
+        // everything after it works on what the approved policy allowed us to
+        // make of them.
+        const prepared = await this.shrinkToBudget(plan, target, attachments);
+        if (!prepared.ok) {
+            await this.fail(action.actionId, 'delivery_failed', prepared.detail, prepared.reason);
+            return;
+        }
+        const delivered = prepared.attachments;
+        if (prepared.optimised) {
+            this.log.info('Anhänge vor dem Versand optimiert', {
+                actionId: action.actionId,
+                bytes: delivered.reduce((sum, item) => sum + item.bytes.byteLength, 0)
+            });
+        }
+
         try {
             const receipt = await target.deliver({
                 subject: plan.subject,
                 body: plan.body,
-                attachments,
+                attachments: delivered.map(({ filename, mimeType, bytes }) => ({
+                    filename,
+                    mimeType,
+                    bytes
+                })),
                 recipient: plan.recipientAddress
             });
             await this.actions.transition(action.actionId, 'completed', {
@@ -250,7 +284,14 @@ export class ActionExecutor {
                             resourceStateHash
                         })
                     ),
+                    // The approved originals, unchanged as a record of what the
+                    // user agreed to hand over.
                     attachments: plan.attachments,
+                    // What actually went out. Equal to the above when nothing
+                    // was optimized; the digests differ when something was, and
+                    // these are the ones computed from the transmitted bytes.
+                    deliveredAttachments: delivered.map((item) => item.audit),
+                    optimizationPolicy: plan.optimization ?? null,
                     deliveryReference: receipt.reference,
                     bindingHash: action.bindingHash
                 }
@@ -342,10 +383,59 @@ export class ActionExecutor {
         return attachments;
     }
 
+    /**
+     * Brings the approved originals under the target's budget, or refuses.
+     *
+     * Two conditions have to hold before anything is transformed: the engine
+     * must be configured at all, and the *stored plan* must carry a policy. The
+     * second is the one that matters for invariant 12 — the policy is inside
+     * the plan, so it is covered by the binding hash, so a stored action cannot
+     * acquire permission to be compressed after the user looked at it.
+     *
+     * Without a policy this is a pass-through. It does not enforce the budget
+     * itself: the target checks its own size limit and refuses on its own
+     * authority, which is exactly what happened before this feature existed and
+     * what AK-20 asks to keep.
+     */
+    private async shrinkToBudget(
+        plan: SendResourcePlan,
+        target: EgressTarget,
+        attachments: EgressAttachment[]
+    ): Promise<
+        | { ok: true; attachments: DeliveredAttachment[]; optimised: boolean }
+        | { ok: false; reason: OptimizationFailureReason; detail: string }
+    > {
+        const inputs: OptimizationInput[] = attachments.map((attachment, index) => ({
+            filename: attachment.filename,
+            mimeType: attachment.mimeType,
+            bytes: attachment.bytes,
+            // Safe to take from the plan: `materialiseAttachments` has already
+            // proved these bytes hash to it.
+            sha256: plan.attachments[index]!.sha256
+        }));
+        if (!plan.optimization || !this.optimization) {
+            return { ok: true, optimised: false, attachments: inputs.map(untouchedDelivery) };
+        }
+        return this.optimization.pipeline.run(
+            inputs,
+            target.describe().maxAttachmentBytes,
+            plan.optimization,
+            this.optimization.limits
+        );
+    }
+
     private async fail(
         actionId: string,
         reason: ActionRecord['statusReason'] & string,
-        detail: string
+        detail: string,
+        /**
+         * The precise internal cause, when there is one. Kept out of
+         * `statusReason` deliberately: that vocabulary is closed and reaches
+         * Hermes, and "your PDF needed a stronger profile than was approved" is
+         * not something the cloud agent has any business learning. It goes in
+         * the local audit trail instead.
+         */
+        internalReason?: OptimizationFailureReason
     ): Promise<void> {
         try {
             await this.actions.transition(actionId, 'failed', {
@@ -359,8 +449,11 @@ export class ActionExecutor {
                 error: describeError(error)
             });
         }
-        await this.audit.record('egress_failed', { actionId, detail: { reason, detail } });
-        this.log.warn('Aktion fehlgeschlagen', { actionId, reason, detail });
+        await this.audit.record('egress_failed', {
+            actionId,
+            detail: internalReason ? { reason, detail, optimization: internalReason } : { reason, detail }
+        });
+        this.log.warn('Aktion fehlgeschlagen', { actionId, reason, detail, optimization: internalReason });
         this.discard(actionId);
     }
 }

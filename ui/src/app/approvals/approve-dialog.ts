@@ -4,7 +4,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MAT_DIALOG_DATA, MatDialogModule } from '@angular/material/dialog';
 import type { ApiActionView } from '@gateway/contract';
-import { formatBytes } from '../core/format';
+import { formatBytes, shortFormat } from '../core/format';
 import { Icon } from '../shared/icon';
 
 /**
@@ -136,12 +136,28 @@ export interface ApproveDialogData {
                             <span class="file">{{ attachment.filename }}</span>
                         }
                     </dd>
+
+                    @if (optimization(); as policy) {
+                        <dt>Verkleinerung</dt>
+                        <dd>
+                            erlaubt bis <strong>{{ policy.maxProfile }}</strong>, nur
+                            {{ formatList() }}
+                            <span class="agent-hint">
+                                greift nur, falls die Menge sonst nicht unter das Limit des Ziels
+                                passt
+                            </span>
+                        </dd>
+                    }
                 </dl>
 
                 <p class="scope">
                     Die Freigabe gilt ausschließlich für genau diese geordnete Ressourcen- und
                     Anhangsmenge, dieses Ziel und diesen Inhalt. Ändert sich davon etwas, verfällt
                     sie.
+                    @if (optimization()) {
+                        Die oben genannte Größe ist die der Originale; nach einer Verkleinerung
+                        gehen kleinere Dateien gleichen Namens und Formats hinaus.
+                    }
                 </p>
 
                 @if (action.target.dynamicRecipient) {
@@ -306,6 +322,17 @@ export class ApproveDialog {
     protected readonly totalBytes = computed(() =>
         formatBytes(this.action.kind === 'send_resource' ? this.action.egress.totalBytes : 0)
     );
+
+    /** The transformation policy this approval binds, if the target has one. */
+    protected readonly optimization = computed(() =>
+        this.action.kind === 'send_resource' ? this.action.egress.optimization : undefined
+    );
+
+    /** `PDF und JPEG`, from the policy's media types. */
+    protected readonly formatList = computed(() => {
+        const formats = (this.optimization()?.formats ?? []).map(shortFormat);
+        return formats.length <= 1 ? (formats[0] ?? '') : `${formats.slice(0, -1).join(', ')} und ${formats.at(-1)}`;
+    });
 
     /**
      * Both acknowledgements guard the same thing: a part of the payload that

@@ -1,5 +1,6 @@
 import nodemailer, { type Transporter } from 'nodemailer';
 import type { MailTargetConfig } from '../config.js';
+import { buildTransformPolicy } from '../attachments/profiles.js';
 import type { TargetDescriptor } from '../core/types.js';
 import { createLogger, describeError, type Logger } from '../util/log.js';
 import {
@@ -60,7 +61,8 @@ export class MailTarget implements EgressTarget {
             dynamicRecipient: this.config.allowDynamicRecipient,
             supportsAttachments: true,
             maxAttachmentBytes: this.config.maxAttachmentBytes,
-            maxAttachments: this.config.maxAttachments
+            maxAttachments: this.config.maxAttachments,
+            optimization: buildTransformPolicy(this.config.optimization)
         };
     }
 

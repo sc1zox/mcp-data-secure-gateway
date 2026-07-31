@@ -240,18 +240,25 @@ export class ResourceGate {
 
     /**
      * Turns a resolved set into what `prepare_action` needs to build a plan:
-     * the original bytes, read sequentially and bounded by `limit` while they
-     * are being read rather than after, and a content-based egress assessment
-     * per member. No original is fetched until `resolveSet` has already
-     * cleared the whole set, and every member gets its own judgement — one
-     * document's assessment must never be displayed as if it covered another.
+     * the original bytes, read sequentially and bounded while they are being
+     * read rather than after, and a content-based egress assessment per member.
+     * No original is fetched until `resolveSet` has already cleared the whole
+     * set, and every member gets its own judgement — one document's assessment
+     * must never be displayed as if it covered another.
+     *
+     * `bounds` is what the gateway is willing to *hold*, which since attachment
+     * optimization exists is no longer the same number as what the target will
+     * *accept*. For a target that may compress, a 30 MiB scan is a legitimate
+     * thing to read and stage even though no mail server would take it; the
+     * budget is enforced after the pipeline instead. For a target that may not,
+     * the caller passes the target's own limit here and nothing changed.
      */
     async prepareAttachments(
         correlationId: string,
         resources: ResolvedResource[],
         purpose: string,
         target: { label: string; purpose: string },
-        limit: number
+        bounds: { totalBytes: number; singleBytes?: number }
     ): Promise<AttachmentPrepResult> {
         const files: SourceFile[] = [];
         let totalBytes = 0;
@@ -281,13 +288,21 @@ export class ResourceGate {
                     detail: { reason: 'unsafe_attachment_set' }
                 };
             }
-            totalBytes += file.bytes.byteLength;
-            if (totalBytes > limit) {
+            if (bounds.singleBytes !== undefined && file.bytes.byteLength > bounds.singleBytes) {
                 return {
                     ok: false,
                     kind: 'rejected',
                     code: 'attachment_too_large',
-                    detail: { bytes: totalBytes, limit }
+                    detail: { bytes: file.bytes.byteLength, limit: bounds.singleBytes, scope: 'single' }
+                };
+            }
+            totalBytes += file.bytes.byteLength;
+            if (totalBytes > bounds.totalBytes) {
+                return {
+                    ok: false,
+                    kind: 'rejected',
+                    code: 'attachment_too_large',
+                    detail: { bytes: totalBytes, limit: bounds.totalBytes, scope: 'total' }
                 };
             }
             files.push(file);

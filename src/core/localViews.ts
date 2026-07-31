@@ -10,6 +10,7 @@ import { findResiduals, type ResidualFinding } from './egress.js';
 import type { SourceLookup, TargetLookup } from './orchestrator.js';
 import type {
     ActionRecord,
+    ApprovedTransformPolicy,
     JudgementRecord,
     LocalResourceSummary,
     PlannedAttachment,
@@ -51,6 +52,8 @@ export interface LocalSendActionView extends LocalActionViewBase {
         body: string;
         attachments: PlannedAttachment[];
         totalBytes: number;
+        /** How far the attachments may be shrunk before transport. Absent means not at all. */
+        optimization?: ApprovedTransformPolicy;
         /** Which of subject and body the cloud agent wrote rather than the gateway. */
         authoredByAgent: { subject: boolean; body: boolean };
     };
@@ -214,7 +217,15 @@ export class LocalViewBuilder {
                 subject: plan.subject,
                 body: plan.body,
                 attachments: plan.attachments,
+                // The originals' total. Deliberately not an estimate of what
+                // will be sent after optimization: an estimate would be a
+                // number nobody can hold the gateway to, and the approval binds
+                // the originals and the policy, not the outcome.
                 totalBytes: plan.attachments.reduce((sum, item) => sum + item.byteSize, 0),
+                // Taken from the stored plan rather than from the target's
+                // current config: what matters is the policy this action was
+                // frozen with, which is also the one the binding hash covers.
+                optimization: plan.optimization,
                 // Older records predate the field; absent means the gateway wrote
                 // both, which is what those actions in fact carry.
                 authoredByAgent: plan.authoredByAgent ?? { subject: false, body: false }

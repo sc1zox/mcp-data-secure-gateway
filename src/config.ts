@@ -101,6 +101,86 @@ const localModelSchema = z.object({
     keepAlive: z.string().default('30m')
 });
 
+/**
+ * What a single target is allowed to have done to its oversized attachments.
+ *
+ * Defaults to `disabled` on purpose: adding this feature must not change what
+ * an existing configuration does. A target only starts transforming anything
+ * once someone writes `mode` into its config, and `disabled` keeps the plan's
+ * `optimization` field absent, which keeps its binding hash unchanged.
+ */
+const targetOptimizationSchema = z
+    .object({
+        /**
+         * `balanced` permits lossless restructuring and the moderate rung.
+         * `compact` additionally permits the aggressive one — never silently:
+         * this is the ceiling the user approves along with the action.
+         */
+        mode: z.enum(['disabled', 'balanced', 'compact']).default('disabled'),
+        pdf: z.boolean().default(true),
+        jpeg: z.boolean().default(true)
+    })
+    .default({});
+
+/**
+ * Engine-side settings shared by every target: what the gateway may spend on
+ * itself while optimizing, and which tools it uses to do it. Kept apart from
+ * the per-target block because these bound the local process, whereas the
+ * target block bounds what the user consented to.
+ */
+const attachmentOptimizationSchema = z
+    .object({
+        enabled: z.boolean().default(true),
+        limits: z
+            .object({
+                maxSingleInputBytes: z.number().int().min(1).default(52_428_800),
+                maxTotalInputBytes: z.number().int().min(1).default(104_857_600),
+                maxWorkingBytes: z.number().int().min(1).default(314_572_800),
+                timeBudgetMs: z.number().int().min(1000).max(600_000).default(30_000)
+            })
+            .default({}),
+        execution: z
+            .object({
+                /** Ghostscript is memory-hungry; one at a time by default. */
+                maxConcurrentPdfJobs: z.number().int().min(1).max(8).default(1),
+                maxConcurrentJpegJobs: z.number().int().min(1).max(8).default(2)
+            })
+            .default({}),
+        pdf: z
+            .object({
+                enabled: z.boolean().default(true),
+                /** The lossless qpdf rung. Cheap, so on by default. */
+                qpdfStructuralOptimization: z.boolean().default(true),
+                /**
+                 * Whether `qpdf --check` warnings (exit 3) disqualify a
+                 * derivative. Structural errors (exit 2) always do, regardless.
+                 * Off by default because exit 2 is the code that means
+                 * "broken"; how often real Ghostscript output lands on 3 is
+                 * unmeasured and belongs to the profile calibration.
+                 */
+                rejectOnWarnings: z.boolean().default(false),
+                /** Ghostscript rungs the engine offers at all. */
+                profiles: z
+                    .array(z.enum(['balanced', 'compact']))
+                    .default(['balanced', 'compact']),
+                qpdfCommand: z.string().min(1).default('qpdf'),
+                ghostscriptCommand: z.string().min(1).default('gs')
+            })
+            .default({}),
+        jpeg: z
+            .object({
+                enabled: z.boolean().default(true),
+                /** Decode-bomb guard: a tiny file can declare huge dimensions. */
+                maxPixels: z.number().int().min(1).default(80_000_000),
+                maxChannels: z.number().int().min(1).max(4).default(4),
+                profiles: z
+                    .array(z.enum(['balanced', 'compact']))
+                    .default(['balanced', 'compact'])
+            })
+            .default({})
+    })
+    .default({});
+
 const mailTargetSchema = z.object({
     /**
      * No longer a single fixed literal: `allowDynamicRecipient` lets more than
@@ -146,7 +226,8 @@ const mailTargetSchema = z.object({
         .min(1)
         // A 20 MiB SMTP message limit applies after base64 and MIME framing.
         // floor((20 MiB - 1 MiB) / 1.37) leaves conservative headroom.
-        .default(14_542_294)
+        .default(14_542_294),
+    optimization: targetOptimizationSchema
 });
 
 const telegramTargetSchema = z.object({
@@ -164,7 +245,8 @@ const telegramTargetSchema = z.object({
         .number()
         .int()
         .min(1)
-        .default(50 * 1024 * 1024)
+        .default(50 * 1024 * 1024),
+    optimization: targetOptimizationSchema
 });
 
 const targetSchema = z.discriminatedUnion('kind', [mailTargetSchema, telegramTargetSchema]);
@@ -219,7 +301,8 @@ export const configSchema = z.object({
     localModel: localModelSchema,
     targets: z.array(targetSchema).min(1),
     approval: approvalSchema,
-    hermesInterface: hermesInterfaceSchema.default({})
+    hermesInterface: hermesInterfaceSchema.default({}),
+    attachmentOptimization: attachmentOptimizationSchema
 });
 
 export type GatewayConfig = z.infer<typeof configSchema>;
@@ -227,6 +310,7 @@ export type SourceConfig = z.infer<typeof paperlessSourceSchema>;
 export type TargetConfig = z.infer<typeof targetSchema>;
 export type MailTargetConfig = z.infer<typeof mailTargetSchema>;
 export type TelegramTargetConfig = z.infer<typeof telegramTargetSchema>;
+export type AttachmentOptimizationConfig = z.infer<typeof attachmentOptimizationSchema>;
 export type LocalModelConfig = z.infer<typeof localModelSchema>;
 export type SourceTransportConfig = z.infer<typeof sourceTransport>;
 
@@ -325,6 +409,31 @@ export function parseConfig(raw: unknown): GatewayConfig {
     }
     if (config.sources.filter((source) => source.enabled).length === 0) {
         throw new ConfigError('Mindestens eine Quelle muss aktiviert sein.');
+    }
+    // A target that promises optimization while the engine is switched off would
+    // bind a policy into every approval that nothing can ever honour, and then
+    // fail every oversized send with a misleading reason.
+    const optimizingTargets = config.targets.filter(
+        (target) => target.enabled && target.optimization.mode !== 'disabled'
+    );
+    if (!config.attachmentOptimization.enabled && optimizingTargets.length > 0) {
+        throw new ConfigError(
+            `attachmentOptimization.enabled ist false, aber folgende Ziele fordern eine Optimierung an: ` +
+                `${optimizingTargets.map((target) => target.id).join(', ')}.`
+        );
+    }
+    const { limits } = config.attachmentOptimization;
+    if (limits.maxSingleInputBytes > limits.maxTotalInputBytes) {
+        throw new ConfigError(
+            `attachmentOptimization.limits.maxSingleInputBytes (${limits.maxSingleInputBytes}) darf ` +
+                `maxTotalInputBytes (${limits.maxTotalInputBytes}) nicht überschreiten.`
+        );
+    }
+    if (limits.maxTotalInputBytes > limits.maxWorkingBytes) {
+        throw new ConfigError(
+            `attachmentOptimization.limits.maxTotalInputBytes (${limits.maxTotalInputBytes}) darf ` +
+                `maxWorkingBytes (${limits.maxWorkingBytes}) nicht überschreiten.`
+        );
     }
     return config;
 }

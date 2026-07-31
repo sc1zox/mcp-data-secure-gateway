@@ -98,3 +98,16 @@ export function formatAttributes(attributes: ApiAttributes | undefined): string 
 export function formatConfidence(confidence: number): string {
     return `${Math.round(confidence * 100)} %`;
 }
+
+/**
+ * `application/pdf` as `PDF`.
+ *
+ * Used where a media type appears inside a German sentence rather than in a
+ * technical list — "nur PDF und JPEG" reads as a sentence, "nur application/pdf
+ * und image/jpeg" reads as a config file. The exact type is still shown
+ * verbatim next to every individual attachment.
+ */
+export function shortFormat(mimeType: string): string {
+    const subtype = mimeType.split('/')[1] ?? mimeType;
+    return subtype.toUpperCase();
+}

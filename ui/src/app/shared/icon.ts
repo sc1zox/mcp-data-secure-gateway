@@ -22,7 +22,8 @@ export type IconName =
     | 'logout'
     | 'chevron'
     | 'link'
-    | 'refresh';
+    | 'refresh'
+    | 'compress';
 
 const PATHS: Readonly<Record<IconName, string>> = {
     shield: 'M12 2.5l7.5 3.2v5.1c0 5-3.2 8.9-7.5 10.7-4.3-1.8-7.5-5.7-7.5-10.7V5.7L12 2.5z',
@@ -36,7 +37,10 @@ const PATHS: Readonly<Record<IconName, string>> = {
     logout: 'M15 8.5V5.5h-10v13h10v-3M10.5 12h10.5M18 8.5l3.5 3.5-3.5 3.5',
     chevron: 'M9 5l7 7-7 7',
     link: 'M10.5 13.5a4 4 0 005.7 0l3-3a4 4 0 10-5.7-5.7l-1.4 1.4M13.5 10.5a4 4 0 00-5.7 0l-3 3a4 4 0 105.7 5.7l1.4-1.4',
-    refresh: 'M20 12a8 8 0 11-2.4-5.7M20 4v4.5h-4.5'
+    refresh: 'M20 12a8 8 0 11-2.4-5.7M20 4v4.5h-4.5',
+    // Four arrows pointing inward: the conventional "make this smaller" glyph.
+    compress:
+        'M9 4v5H4M3 3l6 6M15 4v5h5M21 3l-6 6M9 20v-5H4M3 21l6-6M15 20v-5h5M21 21l-6-6'
 };
 
 @Component({

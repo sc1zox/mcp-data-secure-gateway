@@ -35,6 +35,7 @@ import { clamp, type FindResourceInput, type PrepareActionInput, type SummarizeR
 import { RefusalFactory } from './refusals.js';
 import { DecisionWaiters } from './decisionWaiters.js';
 import { ResourceGate } from './resourceGate.js';
+import { createOptimizationService } from '../attachments/factory.js';
 import { ActionExecutor, ApprovalConflictError, UnknownActionError } from './actionExecutor.js';
 import { ActionPreparer } from './actionPreparation.js';
 import { SelectionFlow } from './selectionFlow.js';
@@ -112,7 +113,14 @@ export class Orchestrator {
         this.log = logger ?? createLogger('orchestrator');
         this.refusals = new RefusalFactory(this.audit, this.guard, this.log);
         this.resourceGate = new ResourceGate(this.references, this.sources, this.audit, this.judge, this.log);
-        this.actionExecutor = new ActionExecutor(this.actions, this.targets, this.resourceGate, this.audit, this.log);
+        this.actionExecutor = new ActionExecutor(
+            this.actions,
+            this.targets,
+            this.resourceGate,
+            this.audit,
+            this.log,
+            createOptimizationService(this.config.attachmentOptimization)
+        );
         this.actionPreparer = new ActionPreparer(
             this.config,
             this.targets,

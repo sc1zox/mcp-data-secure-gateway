@@ -50,10 +50,16 @@ Diese Systeme müssen vorhanden sein und werden von diesem Projekt **nicht** ein
 | SMTP-Zugang | Ziel `private_mail` |
 | Telegram-Bot + Chat-ID | Ziel `private_telegram` |
 | Separater Telegram-Bot + private Chat-/Benutzer-ID (optional) | zusätzlicher Freigabekanal |
+| qpdf + Ghostscript (optional) | automatische PDF-Verkleinerung; ohne sie bleiben PDFs unverändert |
 
 Node.js ≥ 20.11 für das Gateway selbst. Der **Build der Freigabeoberfläche** braucht zusätzlich
 Node ≥ 22.22.3 (oder ≥ 24.15.0), weil Angular 22 das verlangt. Das betrifft nur `npm run build`,
 nicht den Betrieb: `npm start` läuft weiterhin unter 20.11.
+
+qpdf und Ghostscript werden nur für die optionale PDF-Verkleinerung gebraucht und sind keine
+Startvoraussetzung: fehlen sie, startet das Gateway normal, meldet es beim Booten und lehnt
+lediglich eine PDF-Menge ab, die ohne sie zu groß bliebe. JPEG-Verkleinerung braucht nichts
+Zusätzliches — Sharp ist eine npm-Abhängigkeit. Unter Arch Linux: `pacman -S qpdf ghostscript`.
 
 ## Einrichtung
 
@@ -469,12 +475,14 @@ ungefähr 37 Prozent. Die 1-MiB-Reserve lässt Platz für Text, Header und MIME-
 vollständige Nachricht innerhalb des dokumentierten Maximums von 20 MiB bleibt. Telegram behält
 seinen separaten Standard von 50 MiB.
 
-PDFs werden nicht automatisch komprimiert oder gebündelt. Übliche PDFs enthalten bereits
-komprimierte Bild- und Datenströme; ZIP spart dort oft kaum Platz, verschlechtert die
-Empfängerkompatibilität und ändert das ausgelieferte Format. Eine verlustfreie, verlässlich
-wirksame PDF-Optimierung bräuchte einen eigens vertrauten und konfigurierten Backend-Prozess, den
-dieses Projekt nicht mitbringt. Das Gateway führt daher keine externen Programme aus und schreibt
-Dokumente nicht um.
+Anhänge werden nicht gebündelt und nicht auf mehrere Nachrichten verteilt. ZIP spart bei bereits
+komprimierten PDFs kaum Platz, verschlechtert die Empfängerkompatibilität und ändert das
+ausgelieferte Format.
+
+PDF- und JPEG-Anhänge können jedoch pro Ziel automatisch verkleinert werden, wenn die Summe sonst
+nicht unter das Limit passt — siehe den nächsten Abschnitt. Ohne diese ausdrückliche
+Konfiguration bleibt es beim bisherigen Verhalten: das Gateway schreibt keine Dokumente um und
+lehnt eine zu große Menge vor der Freigabe ab.
 
 ### SMTP-Limit für größere Anhangsmengen konfigurieren
 
@@ -499,7 +507,86 @@ Soll beispielsweise CV + SCHUFA + Vertrag als **eine** Nachricht versandt werden
 Der Wert hebt nur die lokale Obergrenze an. Die strikte Summenprüfung vor der Freigabe und die
 zweite Prüfung unmittelbar vor dem SMTP-Versand bleiben aktiv. Ist die Summe größer als der vom
 Anbieter sicher unterstützte Rohdatenwert, bleibt die ehrliche Alternative: Dateien außerhalb
-dieses Gateways verlustfrei verkleinern oder auf mehrere Nachrichten verteilen.
+dieses Gateways verlustfrei verkleinern, auf mehrere Nachrichten verteilen — oder die automatische
+Verkleinerung im nächsten Abschnitt einschalten.
+
+### Zu große PDF- und JPEG-Anhänge automatisch verkleinern
+
+Standardmäßig aus. Ohne Konfiguration ändert sich nichts am bisherigen Verhalten.
+
+Ist sie an einem Ziel eingeschaltet, läuft die Optimierung **nach der Freigabe** und unmittelbar
+vor dem Transport. Das ist eine bewusste Entscheidung darüber, was eine Freigabe bindet:
+
+| Die Freigabe bindet | Die Freigabe bindet **nicht** |
+| --- | --- |
+| Ziel, Empfänger, Betreff, Nachrichtentext | die Größe des späteren Derivats |
+| die ausgewählten Originalressourcen | dessen SHA-256-Prüfsumme |
+| Dateinamen, Medientypen, Hashes der Originale | interne PDF-Metadaten |
+| erlaubte Formate, höchstes erlaubtes Profil, Version der Policy | die exakte Byte-Repräsentation |
+
+Die Policy steht im gespeicherten Plan und geht damit in den Bindungs-Hash ein. Eine Aktion, die
+mit `balanced` freigegeben wurde, kann nicht später mit `compact` ausgeführt werden: das änderte
+den Hash, und `verifyStoredBinding` weist den Datensatz ab. Ein zweites Freigabe-Gate für die
+Kompression gibt es nicht — wer die Aktion freigibt, gibt diese Obergrenze mit frei.
+
+Konfiguration am Ziel:
+
+```json
+"optimization": { "mode": "balanced", "pdf": true, "jpeg": true }
+```
+
+`disabled` (Standard) verändert nichts. `balanced` erlaubt die verlustfreie Strukturoptimierung und
+die moderate Stufe. `compact` erlaubt zusätzlich die stärkere. Das Größenbudget bleibt
+`maxAttachmentBytes` des Ziels — ein Telegram-Ziel mit 50 MiB braucht die Optimierung meist gar
+nicht, ein SMTP-Ziel mit 14 MiB oft schon.
+
+Engine-seitig (global, gilt für alle Ziele):
+
+```jsonc
+"attachmentOptimization": {
+  "enabled": true,
+  "limits": {
+    "maxSingleInputBytes": 52428800,   // größte Einzeldatei, die geladen werden darf
+    "maxTotalInputBytes": 104857600,   // größte Gesamtmenge, die geladen werden darf
+    "maxWorkingBytes": 314572800,      // Originale plus alle gehaltenen Kandidaten
+    "timeBudgetMs": 30000              // Wanduhr für den gesamten Lauf
+  },
+  "execution": { "maxConcurrentPdfJobs": 1, "maxConcurrentJpegJobs": 2 },
+  "pdf": { "enabled": true, "qpdfStructuralOptimization": true, "profiles": ["balanced", "compact"] },
+  "jpeg": { "enabled": true, "profiles": ["balanced", "compact"] }
+}
+```
+
+Die Eingabelimits sind bewusst etwas anderes als `maxAttachmentBytes`: sie begrenzen, was das
+Gateway lokal verarbeiten darf, während `maxAttachmentBytes` begrenzt, was das Ziel annimmt. Erst
+dieser Unterschied macht den Fall überhaupt möglich, für den die Story existiert — eine 30-MiB-PDF
+darf geladen und gezeigt werden, obwohl kein Mailserver sie annähme.
+
+Die Reihenfolge ist fest und versioniert: PDF strukturell (qpdf, verlustfrei) → JPEG balanced →
+PDF balanced → JPEG compact → PDF compact. Innerhalb einer Stufe wird die größte Datei zuerst
+bearbeitet, bei Gleichstand entscheidet die Anhangsreihenfolge. Sobald das Budget erreicht ist,
+endet der Lauf; alles Weitere bleibt unangetastet. Jeder Kandidat entsteht **aus dem Original**,
+nie aus einem bereits komprimierten Derivat, damit keine doppelte verlustbehaftete Codierung
+entsteht.
+
+Nicht verändert werden: verschlüsselte, signierte und interaktive PDFs (Formulare, XFA,
+Portfolios, eingebettete Dateien), alles außer PDF und JPEG, und jede Datei, die bereits passt.
+Bleibt die Menge deswegen zu groß, wird **nichts** versendet — die Pipeline ist fail-closed, ein zu
+großes Original geht nie hinaus, nur weil die Optimierung scheiterte.
+
+Für JPEG gilt: Die EXIF-Orientierung wird zuerst in die Pixel gerechnet, danach werden EXIF-, GPS-,
+XMP- und Kameradaten entfernt; die Ausgabe ist sRGB, bleibt JPEG und behält ihren Dateinamen.
+
+Das Audit hält je versendetem Anhang Originalgröße und -hash, Ausgabegröße und -hash, Optimierer,
+Profil, Werkzeugversion und Dauer fest. Bei unveränderten Dateien sind beide Hashes gleich und
+`wasOptimized` ist `false`. Protokolliert wird, was tatsächlich übergeben wurde — nicht nur, was
+freigegeben war.
+
+> **Die Qualitätsprofile sind noch nicht kalibriert.** Die Werte in
+> `src/attachments/profiles.ts` sind begründete Startwerte, keine gemessenen. Phase 8 der Story
+> verlangt eine Prüfung an einem realen Dokumentkorpus (Zeugnisse, Scans, Smartphone-Fotos), bevor
+> sie als stabil gelten. Jede Änderung daran muss `POLICY_VERSION` erhöhen, sonst liefe eine
+> gestern vorbereitete Aktion heute unter Einstellungen, denen niemand zugestimmt hat.
 
 Die Freigabeoberfläche zeigt jede lokale Ressource mit Quelle, Kennung, Link, Inhaltsgrundlage und
 eigener Modellbewertung sowie jeden ausgehenden Anhang mit Dateiname, Medientyp, Größe und SHA-256.

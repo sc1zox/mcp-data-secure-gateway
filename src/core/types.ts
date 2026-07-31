@@ -110,13 +110,68 @@ export const TERMINAL_ACTION_STATUSES: readonly ActionStatus[] = [
     'expired'
 ];
 
-/** One file that would leave the machine as part of an action. */
+/**
+ * One original file an action was approved against.
+ *
+ * `sha256` pins the bytes as they were read from the source, and
+ * `materialiseAttachments` re-checks it before anything else happens. When an
+ * action carries an `optimization` policy the bytes that actually go out may be
+ * a smaller derivative of these — see `ApprovedTransformPolicy` for what the
+ * approval does and does not cover in that case.
+ */
 export interface PlannedAttachment {
     filename: string;
     mimeType: string;
     byteSize: number;
-    /** Digest of the exact bytes that were planned. Re-checked before sending. */
+    /** Digest of the exact original bytes. Re-checked before any transformation. */
     sha256: string;
+}
+
+/**
+ * The rungs of the size-reduction ladder, weakest first.
+ *
+ * `structural` only rewrites a PDF's object structure and never touches image
+ * data, so it is lossless in the sense that matters here; `balanced` and
+ * `compact` re-encode images and lose information. The order is what
+ * `profileRank` compares, so it is a contract and not a presentation detail.
+ */
+export type TransformProfile = 'structural' | 'balanced' | 'compact';
+
+const PROFILE_ORDER: readonly TransformProfile[] = ['structural', 'balanced', 'compact'];
+
+/** Position on the ladder. Higher means more aggressive, and more lossy. */
+export function profileRank(profile: TransformProfile): number {
+    return PROFILE_ORDER.indexOf(profile);
+}
+
+/**
+ * What the gateway may do to the approved originals between the approval and
+ * the transport.
+ *
+ * The point of writing this into the plan is that it is covered by the binding
+ * hash. The user does not approve a particular derivative — nobody can read a
+ * Ghostscript output before it exists — but they do approve an *upper bound* on
+ * what may be done: these formats, no stronger than this profile, under this
+ * version of the profile catalogue. An action stored with `maxProfile:
+ * 'balanced'` can never be executed with `compact`, because changing the field
+ * changes the hash and `verifyStoredBinding` refuses the record.
+ *
+ * Absent on a plan means no transformation at all: the bytes that leave are the
+ * bytes whose digests `attachments` lists. That absence is load-bearing —
+ * `canonicalize` drops `undefined` fields, so an action prepared for a target
+ * without optimization hashes exactly as it did before this feature existed.
+ */
+export interface ApprovedTransformPolicy {
+    /**
+     * Version of the profile catalogue the approval was bound to. Recalibrating
+     * a profile must bump this, so a pending action prepared under the old
+     * values cannot silently execute under the new ones.
+     */
+    policyVersion: string;
+    /** The strongest rung the gateway may use. Never exceeded, per AK-14. */
+    maxProfile: TransformProfile;
+    /** Media types that may be transformed at all. Sorted, for a stable hash. */
+    formats: string[];
 }
 
 /**
@@ -154,7 +209,16 @@ export interface SendResourcePlan {
     recipientAddress?: string;
     subject?: string;
     body: string;
+    /** The originals, as read from the source and shown in the approval view. */
     attachments: PlannedAttachment[];
+    /**
+     * How far the attachments may be shrunk before transport, if at all.
+     *
+     * Omitted entirely for a target without optimization, which is what keeps
+     * the binding hash of such an action identical to what it was before this
+     * field existed. Set means the user approved that bound, not a result.
+     */
+    optimization?: ApprovedTransformPolicy;
     /**
      * Which parts of the message the cloud agent wrote rather than the gateway.
      *
@@ -396,4 +460,11 @@ export interface TargetDescriptor {
     maxAttachmentBytes: number;
     /** Maximum number of attachments accepted in one approved transfer. */
     maxAttachments?: number;
+    /**
+     * What this target's configuration permits doing to oversized attachments.
+     * Absent for `mode: "disabled"` and for a target that names no policy at
+     * all — in both cases nothing is transformed and the plan carries no
+     * `optimization` field.
+     */
+    optimization?: ApprovedTransformPolicy;
 }

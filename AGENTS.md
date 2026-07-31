@@ -62,6 +62,7 @@ Formatierungsbefehl. Keiner davon darf erfunden werden; jeder hier genannte Befe
 | Lokale semantische Bewertung | `src/judge/` |
 | Private Quellen, nur lesend | `src/sources/` |
 | Ausgehende Ziele | `src/targets/` |
+| Anhangsoptimierung vor dem Transport (PDF, JPEG) | `src/attachments/` |
 | Persistenz, append-only | `src/store/` |
 | Lokale Freigabe (Server und geteilter Contract) | `src/approval/` |
 | Tests, an der Grenze | `test/` |

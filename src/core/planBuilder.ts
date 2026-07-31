@@ -87,6 +87,11 @@ export function buildSendPlan(input: {
                 hermesNote
             }),
         attachments,
+        // Straight through from the target's configuration, and left absent
+        // when it has none: an `optimization: undefined` is dropped by
+        // `canonicalize`, so a target without a policy keeps the binding hash
+        // it had before this field existed.
+        optimization: descriptor.optimization,
         authoredByAgent: { subject: agentSubject !== undefined, body: agentBody !== undefined }
     };
 }

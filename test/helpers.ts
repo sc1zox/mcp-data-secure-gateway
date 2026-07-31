@@ -18,11 +18,12 @@ import { ActionStore } from '../src/store/actionStore.js';
 import { ReferenceStore } from '../src/store/referenceStore.js';
 import { SelectionStore } from '../src/store/selectionStore.js';
 import type { PrivateSource, SourceFile } from '../src/sources/source.js';
-import type {
-    DeliveryReceipt,
-    EgressPayload,
-    EgressTarget,
-    TargetAvailability
+import {
+    TargetDeliveryError,
+    type DeliveryReceipt,
+    type EgressPayload,
+    type EgressTarget,
+    type TargetAvailability
 } from '../src/targets/target.js';
 import { setLogLevel } from '../src/util/log.js';
 
@@ -134,6 +135,15 @@ export class FakeTarget implements EgressTarget {
     async deliver(payload: EgressPayload): Promise<DeliveryReceipt> {
         if (this.failDelivery) {
             throw new Error('SMTP nicht erreichbar');
+        }
+        // The real targets do this, so the fake does too. Without it a test
+        // could not tell an optimization that reached the budget from one that
+        // merely claimed to (AK-20).
+        const total = payload.attachments.reduce((sum, item) => sum + item.bytes.byteLength, 0);
+        if (total > this.describe().maxAttachmentBytes) {
+            throw new TargetDeliveryError(
+                `Anhänge (${total} Bytes) überschreiten das Limit von ${this.describe().maxAttachmentBytes} Bytes.`
+            );
         }
         this.delivered.push({
             subject: payload.subject,

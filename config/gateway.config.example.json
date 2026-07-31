@@ -54,7 +54,8 @@
       "from": "gateway@example.org",
       "to": "ich@example.org",
       "maxAttachments": 10,
-      "maxAttachmentBytes": 14542294
+      "maxAttachmentBytes": 14542294,
+      "optimization": { "mode": "balanced", "pdf": true, "jpeg": true }
     },
     {
       "id": "job_application_mail",
@@ -72,7 +73,8 @@
       "from": "gateway@example.org",
       "allowDynamicRecipient": true,
       "maxAttachments": 10,
-      "maxAttachmentBytes": 14542294
+      "maxAttachmentBytes": 14542294,
+      "optimization": { "mode": "compact", "pdf": true, "jpeg": true }
     },
     {
       "id": "private_telegram",
@@ -83,7 +85,8 @@
       "botToken": "${TELEGRAM_BOT_TOKEN}",
       "chatId": "${TELEGRAM_CHAT_ID}",
       "maxAttachments": 10,
-      "maxAttachmentBytes": 52428800
+      "maxAttachmentBytes": 52428800,
+      "optimization": { "mode": "disabled", "pdf": true, "jpeg": true }
     }
   ],
 
@@ -95,6 +98,34 @@
     "actionTtlSeconds": 1800,
     "referenceTtlSeconds": 3600,
     "selectionTtlSeconds": 1800
+  },
+
+  "attachmentOptimization": {
+    "enabled": true,
+    "limits": {
+      "maxSingleInputBytes": 52428800,
+      "maxTotalInputBytes": 104857600,
+      "maxWorkingBytes": 314572800,
+      "timeBudgetMs": 30000
+    },
+    "execution": {
+      "maxConcurrentPdfJobs": 1,
+      "maxConcurrentJpegJobs": 2
+    },
+    "pdf": {
+      "enabled": true,
+      "qpdfStructuralOptimization": true,
+      "rejectOnWarnings": false,
+      "profiles": ["balanced", "compact"],
+      "qpdfCommand": "qpdf",
+      "ghostscriptCommand": "gs"
+    },
+    "jpeg": {
+      "enabled": true,
+      "maxPixels": 80000000,
+      "maxChannels": 4,
+      "profiles": ["balanced", "compact"]
+    }
   },
 
   "hermesInterface": {

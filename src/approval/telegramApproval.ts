@@ -412,6 +412,17 @@ function renderFullText(view: LocalActionView): string {
             lines.push(`${index + 1}. ${attachment.filename} — ${attachment.mimeType}, ${attachment.byteSize} Bytes`);
             lines.push(`   sha256: ${attachment.sha256}`);
         });
+        if (view.egress.optimization) {
+            // Same reason the web dialog says it: the sizes and digests just
+            // listed are the originals', and approving here approves that they
+            // may be shrunk — but not any particular result.
+            const policy = view.egress.optimization;
+            lines.push(
+                `Verkleinerung erlaubt bis ${policy.maxProfile} (${policy.formats.join(', ')}), ` +
+                    'falls die Menge sonst nicht unter das Limit des Ziels passt. ' +
+                    'Größen und Prüfsummen oben sind die der Originale.'
+            );
+        }
         if (view.needsRefetch) {
             lines.push('Hinweis: Die Anhänge werden bei Freigabe erneut aus der Quelle gelesen und geprüft.');
         }

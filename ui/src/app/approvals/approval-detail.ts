@@ -3,7 +3,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import type { ApiJudgement, ApiSendActionView } from '@gateway/contract';
-import { formatAttributes, formatBytes, formatConfidence, formatTime } from '../core/format';
+import { formatAttributes, formatBytes, formatConfidence, formatTime, shortFormat } from '../core/format';
 import { CountdownLabel } from '../shared/countdown';
 import { Field, Fields } from '../shared/fields';
 import { Icon } from '../shared/icon';
@@ -136,13 +136,26 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
                                     <span class="ltg-muted">{{ bytes(file.byteSize) }}</span>
                                     <span
                                         class="ltg-mono ltg-muted hash"
-                                        matTooltip="Digest genau der Bytes, die geplant sind. Vor dem Senden erneut geprüft."
+                                        [matTooltip]="hashTooltip()"
                                     >
                                         sha256 {{ file.sha256 }}
                                     </span>
                                 </li>
                             }
                         </ul>
+                        @if (optimization(); as policy) {
+                            <p class="optimization">
+                                <ltg-icon name="compress" [size]="16" />
+                                <span>
+                                    Passen diese Anhänge nicht unter das Limit des Ziels, darf das
+                                    Gateway sie vor dem Versand verkleinern — <strong>höchstens
+                                    {{ policy.maxProfile }}</strong>, nur
+                                    {{ formatList() }}. Größe und sha256 oben gelten
+                                    dann für die Originale, nicht für die versendete Datei. Der
+                                    Inhalt bleibt derselbe, Dateiname und Format auch.
+                                </span>
+                            </p>
+                        }
                     }
                 </section>
 
@@ -505,6 +518,23 @@ export type ApprovalDecision = 'approve' | 'reject' | 'reselect' | 'discard';
             overflow-wrap: anywhere;
         }
 
+        .optimization {
+            display: flex;
+            gap: 0.5rem;
+            align-items: flex-start;
+            margin: 0.75rem 0 0;
+            padding: 0.6rem 0.75rem;
+            border-radius: 6px;
+            background: rgba(120, 120, 120, 0.09);
+            font-size: 0.85rem;
+            line-height: 1.45;
+        }
+
+        .optimization ltg-icon {
+            flex: none;
+            opacity: 0.7;
+        }
+
         .hash {
             grid-column: 1 / -1;
             cursor: help;
@@ -645,6 +675,29 @@ export class ApprovalDetail {
     });
     protected readonly totalBytes = computed(() => formatBytes(this.action().egress.totalBytes));
     protected readonly createdAt = computed(() => formatTime(this.action().createdAt));
+
+    /**
+     * The transformation policy frozen into this action, if it has one. Absent
+     * for every target that sends originals untouched, which is the default.
+     */
+    protected readonly optimization = computed(() => this.action().egress.optimization);
+
+    /** `PDF und JPEG`, from the policy's media types. */
+    protected readonly formatList = computed(() => {
+        const formats = (this.optimization()?.formats ?? []).map(shortFormat);
+        return formats.length <= 1 ? (formats[0] ?? '') : `${formats.slice(0, -1).join(', ')} und ${formats.at(-1)}`;
+    });
+
+    /**
+     * The digest means two different things depending on whether the action may
+     * be optimized, and saying the wrong one is worse than saying nothing.
+     */
+    protected readonly hashTooltip = computed(() =>
+        this.optimization()
+            ? 'Digest des Originals. Wird vor der Verarbeitung geprüft; die versendete Datei kann ' +
+              'nach einer Verkleinerung einen anderen Digest haben. Das Audit hält beide fest.'
+            : 'Digest genau der Bytes, die geplant sind. Vor dem Senden erneut geprüft.'
+    );
 
     /**
      * True only for the one case that deserves no caveat: the model read the

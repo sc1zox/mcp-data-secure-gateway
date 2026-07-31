@@ -1,4 +1,5 @@
 import type { TelegramTargetConfig } from '../config.js';
+import { buildTransformPolicy } from '../attachments/profiles.js';
 import type { TargetDescriptor } from '../core/types.js';
 import { createLogger, describeError, type Logger } from '../util/log.js';
 import {
@@ -52,7 +53,8 @@ export class TelegramTarget implements EgressTarget {
             dynamicRecipient: false,
             supportsAttachments: true,
             maxAttachmentBytes: this.config.maxAttachmentBytes,
-            maxAttachments: this.config.maxAttachments
+            maxAttachments: this.config.maxAttachments,
+            optimization: buildTransformPolicy(this.config.optimization)
         };
     }
 

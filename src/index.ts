@@ -11,6 +11,7 @@ import { OllamaClient } from './judge/ollamaClient.js';
 import { estimateContextBudget } from './judge/prompts.js';
 import { createHermesServer, serveHttp, serveStdio } from './mcp/hermesServer.js';
 import { SourceRegistry } from './sources/registry.js';
+import { createOptimizationService } from './attachments/factory.js';
 import { TargetRegistry } from './targets/registry.js';
 import { AuditLog } from './store/auditLog.js';
 import { ActionStore } from './store/actionStore.js';
@@ -122,11 +123,37 @@ async function main(): Promise<void> {
     await approval.start();
     await telegramApproval.start();
 
+    // Which optimization tools are actually installed, established once at boot
+    // rather than at the moment somebody is waiting for a send. A missing tool
+    // is deliberately not a startup failure: everything that already fits under
+    // its target's limit still goes out, and only an oversized attachment is
+    // refused — with a reason that names the tool, thanks to this probe.
+    const optimizationService = createOptimizationService(config.attachmentOptimization);
+    const optimizationReport = (await optimizationService?.pipeline.probe()) ?? [];
+    for (const entry of optimizationReport) {
+        if (entry.available) {
+            log.info('Anhangsoptimierung bereit', { format: entry.mimeType, version: entry.version });
+        } else {
+            log.warn('Anhangsoptimierung nicht verfügbar', {
+                format: entry.mimeType,
+                optimizer: entry.optimizer,
+                detail: entry.detail
+            });
+        }
+    }
+
     // Printed to stderr so it is visible even when stdout carries MCP traffic.
     process.stderr.write(
         `\nFreigabeoberfläche: ${approval.url()}\n` +
             `Ziele: ${targets.describeAll().map((target) => target.id).join(', ')}\n` +
-            `Quellen: ${sources.all().map((source) => `${source.id}${source.isAvailable() ? '' : ' (nicht verbunden)'}`).join(', ')}\n\n`
+            `Quellen: ${sources.all().map((source) => `${source.id}${source.isAvailable() ? '' : ' (nicht verbunden)'}`).join(', ')}\n` +
+            `Anhangsoptimierung: ${
+                optimizationReport.length === 0
+                    ? 'abgeschaltet'
+                    : optimizationReport
+                          .map((entry) => `${entry.mimeType}${entry.available ? '' : ' (nicht verfügbar)'}`)
+                          .join(', ')
+            }\n\n`
     );
 
     const sweepTimer = setInterval(() => {

@@ -134,12 +134,37 @@ export interface ApiTargetSummary {
     dynamicRecipient: boolean;
 }
 
+/**
+ * What the gateway may do to the attachments between this approval and the
+ * transport, when the target is configured to shrink oversized ones.
+ *
+ * Shown because the sizes and digests next to it describe the *originals*, and
+ * a reader who is not told otherwise will take them for what arrives. The
+ * approval does bind this policy — it is part of the plan and therefore of the
+ * binding hash — but it does not bind the resulting bytes, and that difference
+ * is only honest if it is on screen.
+ */
+export interface ApiTransformPolicy {
+    /** Version of the profile catalogue this approval is bound to. */
+    policyVersion: string;
+    /** The strongest rung permitted. Never exceeded during execution. */
+    maxProfile: 'structural' | 'balanced' | 'compact';
+    /** Media types that may be transformed at all, e.g. `application/pdf`. */
+    formats: string[];
+}
+
 /** Exactly what leaves the machine if this action is approved. */
 export interface ApiEgressPlan {
     subject?: string;
     body: string;
+    /** The originals. Sizes and digests below are theirs. */
     attachments: ApiAttachment[];
     totalBytes: number;
+    /**
+     * Absent for every target that transforms nothing — which is the default,
+     * and which means the bytes listed above are exactly the bytes sent.
+     */
+    optimization?: ApiTransformPolicy;
     /**
      * Which parts the cloud agent wrote verbatim rather than the gateway. The UI
      * marks those, because "a machine notice the gateway composed" and "prose an

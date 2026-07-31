@@ -134,12 +134,25 @@ export class ActionPreparer {
         // by the configured total as they come in, then have each member
         // assessed on its own content — one gate, because both checks decide
         // whether these bytes may become part of a plan at all.
+        // Which ceiling applies depends on whether this target may compress. If
+        // it may, refusing here at the target's transport limit would make the
+        // whole feature unreachable: the oversized sets that need the pipeline
+        // would never survive long enough to be approved. The transport limit
+        // is then checked after the pipeline instead, and by the target itself.
+        const optimisation = this.config.attachmentOptimization;
+        const bounds =
+            descriptor.optimization && optimisation.enabled
+                ? {
+                      totalBytes: optimisation.limits.maxTotalInputBytes,
+                      singleBytes: optimisation.limits.maxSingleInputBytes
+                  }
+                : { totalBytes: descriptor.maxAttachmentBytes };
         const prepared = await this.resourceGate.prepareAttachments(
             correlationId,
             resolvedSet.resources,
             purpose,
             descriptor,
-            descriptor.maxAttachmentBytes
+            bounds
         );
         if (!prepared.ok) {
             if (prepared.kind === 'local_model_failure') {

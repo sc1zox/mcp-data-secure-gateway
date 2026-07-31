@@ -96,7 +96,42 @@ export class ActionStore {
 
     async load(): Promise<void> {
         await this.store.load();
+        await this.recoverInterrupted();
         await this.expireStale();
+    }
+
+    /**
+     * Closes out actions that were mid-delivery when the process died.
+     *
+     * `executing` means "the transport was called, or was about to be". After a
+     * restart there is no way to learn which — the SMTP server may have accepted
+     * the message a millisecond before the power went out. So the action is
+     * marked failed and the user prepares a new one if they still want it.
+     *
+     * Retrying would be the other option and is the wrong one: a duplicate
+     * application sent to an employer cannot be recalled, whereas a send that
+     * has to be repeated by hand costs a minute. The audit trail keeps both the
+     * `action_approved` entry and this failure, so the ambiguity is visible
+     * rather than resolved by a guess.
+     */
+    private async recoverInterrupted(): Promise<void> {
+        for (const record of this.store.all()) {
+            if (record.status !== 'executing') {
+                continue;
+            }
+            await this.transition(record.actionId, 'failed', {
+                reason: 'delivery_failed',
+                localOutcome:
+                    'Die Ausführung wurde durch einen Neustart unterbrochen. Ob die Übertragung ' +
+                    'stattgefunden hat, ist nicht feststellbar; es wird nicht automatisch erneut versandt.'
+            });
+            await this.audit.record('egress_failed', {
+                actionId: record.actionId,
+                resourceRef: record.resourceRef,
+                targetId: targetIdOf(record.plan),
+                detail: { reason: 'delivery_failed', interruptedByRestart: true }
+            });
+        }
     }
 
     async create(record: ActionRecord): Promise<void> {
