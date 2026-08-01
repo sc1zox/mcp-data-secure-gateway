@@ -1,4 +1,4 @@
-# US-003 — Freigabekanäle: Empfänger prüfen, Informationen konzentrieren
+# US-003 — Freigabekanäle: Empfänger prüfen, vollständigen Kontext anzeigen
 
 | | |
 | --- | --- |
@@ -12,8 +12,8 @@
 ## User Story
 
 > **Als** Nutzer des Gateways
-> **möchte ich** in jedem Freigabekanal die vollständige E-Mail-Empfängeradresse sehen und nur die Informationen erhalten, die für meine Versandentscheidung erforderlich sind,
-> **damit** ich das Versandziel verlässlich prüfen kann, ohne von redundanten oder dokumentnahen Metadaten abgelenkt zu werden.
+> **möchte ich** in jedem Freigabekanal die vollständige E-Mail-Empfängeradresse sowie den vollständigen Dokument- und Bewertungs-Kontext sehen,
+> **damit** ich Versandziel, Dokument und Bewertung vor einer Freigabe verlässlich prüfen kann.
 
 ---
 
@@ -35,14 +35,18 @@ Der private, fest gebundene Telegram-Freigabekanal zeigt dieselbe vollständige 
 
 Die Adresse bleibt Teil des unveränderlichen Freigabe-Snapshots. Eine Änderung von Ziel oder Empfänger erzeugt weiterhin eine neue Aktion.
 
-### 2. Konzentrierte Telegram-Freigabe
+### 2. Vollständige Telegram-Freigabe
 
-Für eine versendbare Aktion zeigt Telegram nur:
+Für eine versendbare Aktion zeigt Telegram:
 
 - Zweck,
 - Erstell- und Ablaufzeit,
-- Ziel und vollständige Empfängeradresse,
+- Dokumenttitel, Quelle und Quellkennung,
+- Medientyp und Größe der Ressource,
+- vollständige Empfängeradresse und Ziel,
 - Hinweis auf einen vom Agenten vorgeschlagenen dynamischen Empfänger,
+- Modellbewertung mit Sensibilität, Konfidenz, Begründung und Grundlage der Inhaltsprüfung,
+- Inhaltsangabe oder Inhaltsauszug, sofern für die Aktion vorhanden,
 - Kennzeichnung der Autorschaft,
 - Betreff und vollständigen Nachrichtentext,
 - Anhänge mit Dateiname, Medientyp und Größe,
@@ -51,13 +55,11 @@ Für eine versendbare Aktion zeigt Telegram nur:
 
 Telegram zeigt nicht:
 
-- Dokumenttitel,
-- Quelle oder Quellkennung,
-- Modellbewertung, Konfidenz oder Modellbegründung,
-- Inhaltsauszüge oder sonstige aus dem Dokument gelesene Angaben,
-- Quell-URLs, Originaldateien, Portal- oder MCP-Tokens.
+- Quell-URLs,
+- Originaldateien,
+- Portal- oder MCP-Tokens.
 
-Eine Zusammenfassung bleibt in Telegram nicht freigebbar, weil ihr Text dort nicht angezeigt wird.
+Eine Zusammenfassung bleibt in Telegram nicht freigebbar, weil ihr vollständiger Zusammenfassungstext dort weiterhin nicht angezeigt wird.
 
 ### 3. Sicherheitsgrenzen
 
@@ -72,7 +74,8 @@ Eine Zusammenfassung bleibt in Telegram nicht freigebbar, weil ihr Text dort nic
 
 - [ ] Ein fest konfiguriertes E-Mail-Ziel wird im lokalen Portal mit vollständiger Empfängeradresse angezeigt.
 - [ ] Dieselbe vollständige Adresse erscheint bei einer Versandfreigabe im privaten Telegram-Freigabekanal.
-- [ ] Telegram enthält alle zur Freigabe erforderlichen Versanddaten, aber keine Dokumenttitel, Quellinformationen, Modellbewertung oder Dokumentinhalte.
+- [ ] Telegram enthält vollständigen Dokumenttitel, Quelle, Quellkennung, Modellbewertung, Konfidenz, Begründung und Inhaltsangabe beziehungsweise -auszug, sofern vorhanden.
+- [ ] Telegram enthält keine Quell-URLs, Originaldateien, Portal- oder MCP-Tokens.
 - [ ] Betreff und Nachrichtentext werden für eine über Telegram freigebbare Versandaktion vollständig angezeigt.
 - [ ] Änderungen an Empfänger, Ziel, Betreff, Text oder Anhängen machen eine neue Freigabe erforderlich.
 - [ ] Eine Zusammenfassung kann über Telegram weiterhin nur abgelehnt, nicht freigegeben werden.
