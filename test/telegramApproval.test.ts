@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { after, describe, it } from 'node:test';
-import { makeHarness, waitForTerminal, type Harness } from './helpers.js';
+import { makeHarness, TEST_SECRET_TOKEN, waitForTerminal, type Harness } from './helpers.js';
 import { TelegramSettingsStore } from '../src/approval/settingsStore.js';
 import {
     TelegramApprovalAdapter,
@@ -151,7 +151,13 @@ function sentText(client: FakeTelegramClient): string {
 describe('Telegram-Freigabekanal: Textprojektion', () => {
     it('rendert weder webUrl noch Originaldateien, nur die Portalinhalte', async () => {
         const created = await harness();
+        Object.assign(created.source, {
+            webUrl: (nativeId: string) => `https://paperless.local/documents/${nativeId}/details`
+        });
         created.source.resources[0]!.attributes = { Korrespondent: 'Eigene Unterlagen' };
+        // Keep this excerpt URL-free: AK-4 forbids the gateway's source URL, not
+        // arbitrary characters that may legitimately occur in document text.
+        created.source.resources[0]!.excerpt = '';
         const actionId = await prepare(created);
         const settings = await activeSettings(created.dataDir);
         const client = new FakeTelegramClient();
@@ -168,13 +174,18 @@ describe('Telegram-Freigabekanal: Textprojektion', () => {
         await waitUntil(() => client.sendMessageCalls().length > 0);
 
         const text = sentText(client);
+        const webUrl = view.resources[0]?.webUrl;
+        assert.ok(webUrl);
         assert.ok(text.includes(actionId));
+        assert.ok(!text.includes(webUrl));
         assert.ok(!text.includes('http://'));
         assert.ok(!text.includes('https://'));
         assert.ok(!/webUrl/i.test(text));
+        assert.ok(!text.includes('test-ui-token-with-at-least-thirty-two-characters'));
+        assert.ok(!text.includes(TEST_SECRET_TOKEN));
     });
 
-    it('sendet Dokumentname, Modellbewertung und den ausgehenden Text, aber keinen Dokumentinhalt', async () => {
+    it('sendet Dokumentname, Modellbewertung, Dokumentauszug und den ausgehenden Text', async () => {
         const created = await harness();
         created.source.resources[0]!.attributes = { Korrespondent: 'Finanzamt Musterstadt' };
         created.source.resources[0]!.excerpt = 'Steuernummer 123/456/78900, Erstattung 1.234,56 EUR.';
@@ -204,15 +215,79 @@ describe('Telegram-Freigabekanal: Textprojektion', () => {
         await waitUntil(() => client.sendMessageCalls().length > 0);
 
         const text = sentText(client);
-        // Name, verdict and the characters that would be sent as text.
+        // Name, verdict, decision context and the characters that would be sent as text.
         assert.ok(text.includes('Lebenslauf 2026'));
         assert.match(text, /Sensibilität/);
         assert.ok(text.includes('Bescheid Musterstadt'));
         assert.ok(text.includes('Anbei der Bescheid über die Erstattung.'));
-        // Read out of the document, and everything that narrates it.
-        assert.ok(!text.includes('Steuernummer'));
+        assert.ok(text.includes('Steuernummer'));
+        assert.ok(text.includes('Testbegründung'));
+        // Source attributes are not part of the decision context sent to Telegram.
         assert.ok(!text.includes('Finanzamt Musterstadt'));
-        assert.ok(!text.includes('Testbegründung'));
+    });
+
+    it('AK-2/AK-3: zeigt Empfängeradresse und vollständigen Ressourcenkontext', async () => {
+        const created = await harness();
+        const actionId = await prepare(created);
+        const settings = await activeSettings(created.dataDir);
+        const client = new FakeTelegramClient();
+        const adapter = new TelegramApprovalAdapter(
+            created.orchestrator,
+            created.audit,
+            settings,
+            undefined,
+            client
+        );
+
+        const view = created.orchestrator.localPendingActions().find((v) => v.actionId === actionId)!;
+        adapter.notifyPending(view);
+        await waitUntil(() => client.sendMessageCalls().length > 0);
+
+        const text = sentText(client);
+        for (const expected of [
+            'ich@example.org',
+            'Lebenslauf 2026',
+            'Testquelle',
+            '4711',
+            'Sensibilität',
+            'Konfidenz',
+            'Testbegründung.',
+            'Berufserfahrung'
+        ]) {
+            assert.ok(text.includes(expected), `${expected} fehlt im Telegram-Text`);
+        }
+    });
+
+    it('begrenzt den Dokumentauszug auf 1200 Zeichen und markiert nur echte Kürzungen', async () => {
+        for (const testCase of [
+            { excerpt: 'A'.repeat(1200), truncated: false },
+            { excerpt: `${'B'.repeat(1200)}Z`, truncated: true }
+        ]) {
+            const created = await harness();
+            created.source.resources[0]!.excerpt = testCase.excerpt;
+            const actionId = await prepare(created);
+            const settings = await activeSettings(created.dataDir);
+            const client = new FakeTelegramClient();
+            const adapter = new TelegramApprovalAdapter(
+                created.orchestrator,
+                created.audit,
+                settings,
+                undefined,
+                client
+            );
+
+            const view = created.orchestrator.localPendingActions().find((v) => v.actionId === actionId)!;
+            adapter.notifyPending(view);
+            await waitUntil(() => client.sendMessageCalls().length > 0);
+
+            const text = sentText(client);
+            const marker = ' … (gekürzt, vollständig im Portal)';
+            assert.ok(text.includes(`Auszug: ${testCase.excerpt.slice(0, 1200)}`));
+            assert.equal(text.includes(marker), testCase.truncated);
+            if (testCase.truncated) {
+                assert.ok(!text.includes(testCase.excerpt));
+            }
+        }
     });
 
     it('zeigt den Zusammenfassungstext nicht', async () => {
@@ -244,6 +319,39 @@ describe('Telegram-Freigabekanal: Textprojektion', () => {
         assert.ok(!text.includes(view.summary.text));
         assert.ok(!text.includes('Es handelt sich um'));
         // What stays is the handle that lets the user find this in the portal.
+        assert.ok(text.includes(view.actionId));
+    });
+
+    it('AK-7: eine Zusammenfassung trägt weder Auszug noch Begründung nach Telegram', async () => {
+        const created = await harness();
+        const found = await created.orchestrator.findResource({ query: QUERY, purpose: PURPOSE });
+        assert.ok(found.status === 'resolved');
+        const prepared = await created.orchestrator.summarizeResource({
+            reference: found.resource.reference,
+            purpose: PURPOSE
+        });
+        const settings = await activeSettings(created.dataDir);
+        const client = new FakeTelegramClient();
+        const adapter = new TelegramApprovalAdapter(
+            created.orchestrator,
+            created.audit,
+            settings,
+            undefined,
+            client
+        );
+
+        const view = created.orchestrator
+            .localPendingActions()
+            .find((v) => v.actionId === prepared.action_id)!;
+        assert.ok(view.kind === 'summarize_resource');
+        adapter.notifyPending(view);
+        await waitUntil(() => client.sendMessageCalls().length > 0);
+
+        const text = sentText(client);
+        // This is a guard for D3 rather than a pre-implementation RED: a broad
+        // rendering change would make both assertions fail.
+        assert.ok(!text.includes('Berufserfahrung'));
+        assert.ok(!text.includes('Testbegründung'));
         assert.ok(text.includes(view.actionId));
     });
 

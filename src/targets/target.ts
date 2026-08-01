@@ -47,20 +47,6 @@ export interface DeliveryReceipt {
 
 export class TargetDeliveryError extends Error {}
 
-/**
- * Masks an address for display in the approval view. The user needs to
- * recognise the destination, not read it in full — and the redacted form is what
- * ends up in screenshots and logs.
- */
-export function maskEmail(address: string): string {
-    const [local, domain] = address.split('@');
-    if (!local || !domain) {
-        return '***';
-    }
-    const head = local.slice(0, 1);
-    return `${head}${'*'.repeat(Math.max(local.length - 1, 1))}@${domain}`;
-}
-
 /** Telegram chat ids are numeric and identifying; show only the tail. */
 export function maskChatId(chatId: string): string {
     if (chatId.length <= 3) {

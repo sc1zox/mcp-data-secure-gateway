@@ -5,7 +5,6 @@ import type { TargetDescriptor } from '../core/types.js';
 import { createLogger, describeError, type Logger } from '../util/log.js';
 import {
     TargetDeliveryError,
-    maskEmail,
     type DeliveryReceipt,
     type EgressPayload,
     type EgressTarget,
@@ -18,7 +17,8 @@ import {
  * By default this is exactly the fixed-recipient target invariant 6 describes:
  * `this.config.to` is read directly in `deliver` and the payload's `recipient`
  * is never even looked at, so no amount of creative input from Hermes or a
- * document can redirect a message.
+ * document can redirect a message. Its full address is exposed to the local
+ * approval view so the user can verify the destination.
  *
  * With `allowDynamicRecipient` set, this instance is the one deliberate
  * exception: the address comes from the approved action instead, but never
@@ -57,7 +57,7 @@ export class MailTarget implements EgressTarget {
             purpose: this.config.purpose,
             recipientDisplay: this.config.allowDynamicRecipient
                 ? '(vom Nutzer je Aktion bestätigt)'
-                : maskEmail(this.config.to!),
+                : this.config.to!,
             dynamicRecipient: this.config.allowDynamicRecipient,
             supportsAttachments: true,
             maxAttachmentBytes: this.config.maxAttachmentBytes,

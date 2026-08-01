@@ -1,8 +1,11 @@
 import { strict as assert } from 'node:assert';
 import { after, describe, it } from 'node:test';
+import { parseConfig } from '../src/config.js';
 import { EgressGuard, EgressViolationError, sanitiseLabel } from '../src/core/egress.js';
+import { computeBindingHash } from '../src/core/orchestrator.js';
 import { ActionImmutabilityError } from '../src/store/actionStore.js';
 import { LocalModelUnavailableError } from '../src/judge/ollamaClient.js';
+import { MailTarget } from '../src/targets/mailTarget.js';
 import {
     makeHarness,
     makeResource,
@@ -107,6 +110,57 @@ describe('Invariante 5: Zugangsdaten und interne Kennungen bleiben lokal', () =>
 });
 
 describe('Invariante 6: nur lokal konfigurierte Ziele', () => {
+    it('AK-1: zeigt bei einem fest konfigurierten E-Mail-Ziel die vollständige Adresse', () => {
+        const targetConfig = (allowDynamicRecipient: boolean) =>
+            parseConfig({
+                dataDir: './nicht-verwendet',
+                sources: [
+                    {
+                        id: 'paperless',
+                        kind: 'paperless-mcp',
+                        transport: { kind: 'stdio', command: 'node', args: ['noop.js'] }
+                    }
+                ],
+                localModel: { baseUrl: 'http://127.0.0.1:11434', model: 'm' },
+                targets: [
+                    {
+                        id: 'private_mail',
+                        kind: 'smtp',
+                        smtp: { host: 'h', user: 'u', password: 'p' },
+                        from: 'gateway@example.org',
+                        to: allowDynamicRecipient ? undefined : 'ich@example.org',
+                        allowDynamicRecipient
+                    }
+                ],
+                approval: { uiToken: 'test-ui-token-with-at-least-thirty-two-characters' }
+            }).targets[0] as never;
+
+        assert.equal(new MailTarget(targetConfig(false)).describe().recipientDisplay, 'ich@example.org');
+        assert.equal(
+            new MailTarget(targetConfig(true)).describe().recipientDisplay,
+            '(vom Nutzer je Aktion bestätigt)'
+        );
+    });
+
+    it('AK-9: gibt keine Empfängeradresse an Hermes', async () => {
+        const { orchestrator } = await harness({ targetDescriptor: { dynamicRecipient: true } });
+        const found = await orchestrator.findResource({ query: QUERY, purpose: PURPOSE });
+        assert.ok(found.status === 'resolved');
+
+        const result = [
+            orchestrator.listTargets(),
+            await orchestrator.prepareAction({
+                reference: found.resource.reference,
+                target: 'private_mail',
+                purpose: PURPOSE,
+                recipient: 'jobs@unternehmen.example'
+            })
+        ];
+        const serialised = JSON.stringify(result);
+        assert.doesNotMatch(serialised, /ich@example\.org/);
+        assert.doesNotMatch(serialised, /jobs@unternehmen\.example/);
+    });
+
     it('weist ein unbekanntes Ziel ab, ohne etwas zu übertragen', async () => {
         const { orchestrator, target } = await harness();
         const found = await orchestrator.findResource({ query: QUERY, purpose: PURPOSE });
@@ -248,6 +302,42 @@ describe('Invariante 7: jede Übertragung braucht eine lokale Freigabe', () => {
 });
 
 describe('Invariante 12: freigegebene Aktionen sind unveränderlich', () => {
+    it('AK-6: ein anderer Empfänger ergibt eine andere Aktion mit anderem Bindungs-Hash', async () => {
+        const { orchestrator, actions } = await harness({
+            targetDescriptor: { dynamicRecipient: true }
+        });
+        const found = await orchestrator.findResource({ query: QUERY, purpose: PURPOSE });
+        assert.ok(found.status === 'resolved');
+
+        const first = await orchestrator.prepareAction({
+            reference: found.resource.reference,
+            target: 'private_mail',
+            purpose: PURPOSE,
+            recipient: 'jobs@unternehmen.example'
+        });
+        const second = await orchestrator.prepareAction({
+            reference: found.resource.reference,
+            target: 'private_mail',
+            purpose: PURPOSE,
+            recipient: 'bewerbung@unternehmen.example'
+        });
+        assert.notEqual(first.action_id, second.action_id);
+
+        const firstRecord = actions.get(first.action_id);
+        const secondRecord = actions.get(second.action_id);
+        assert.ok(firstRecord?.resourceBindings);
+        assert.ok(secondRecord?.resourceBindings);
+        const hashOf = (record: typeof firstRecord & { resourceBindings: NonNullable<typeof firstRecord>['resourceBindings'] }) =>
+            computeBindingHash(
+                record.resourceBindings.map(({ resourceRef, resourceStateHash }) => ({
+                    resourceRef,
+                    resourceStateHash
+                })),
+                record.plan
+            );
+        assert.notEqual(hashOf(firstRecord), hashOf(secondRecord));
+    });
+
     it('verweigert die Freigabe, wenn der gespeicherte Datensatz nicht zu sich selbst passt', async () => {
         const { orchestrator, actions, target } = await harness();
         const found = await orchestrator.findResource({ query: QUERY, purpose: PURPOSE });
@@ -529,7 +619,7 @@ describe('Invariante 14: lokale Nachvollziehbarkeit', () => {
         const egress = (await audit.tail(200)).find((event) => event.type === 'egress_performed');
         assert.ok(egress);
         const detail = egress.detail as Record<string, unknown>;
-        assert.equal(detail.recipientDisplay, 'i**@example.org');
+        assert.equal(detail.recipientDisplay, 'ich@example.org');
         assert.ok(Array.isArray(detail.attachments));
         assert.ok(typeof detail.bodySha256 === 'string');
     });

@@ -153,19 +153,18 @@ deaktiviert und unabhängig vom Versandziel `private_telegram`: Ein eigener Bot 
 dieselben Prüfungen aus wie das Browserportal. Er versendet keine Originaldateien und ändert
 die Konfiguration der ausgehenden Ziele nicht.
 
-Telegram ist ein externer Cloud-Dienst und bekommt deshalb nichts, was aus einem privaten Dokument
-gelesen wurde. Es geht dorthin, woran eine wartende Freigabe zu erkennen ist — Dokumentname, Quelle
-und Quellkennung, Medientyp und Größe, Zweck, Ziel und Empfänger, Anhangsnamen mit Größen sowie
-die Modellbewertung als Sensibilität und Konfidenz — und bei einer Sendung zusätzlich Betreff und
-Nachrichtentext im Wortlaut. Maßgeblich ist die Herkunft der Zeichen, nicht ihr Empfänger: Betreff
-und Text sind entweder lokal aus Zweck und geprüfter Bezeichnung zusammengestellt oder vom
-Cloud-Agenten geschrieben, der sie ohnehin schon hat. Aus dem Dokument gelesen sind dagegen
-Textauszüge, dessen Merkmale, die Begründung des Modells und der Text einer Zusammenfassung; die
-bleiben im Browserportal, ebenso Originaldateien, Portal-/MCP-Tokens und Quell-URLs. Dokumentnamen,
-Zweck, Anhangsnamen, der Nachrichtentext und bei einem Ziel mit angebbarem Empfänger dessen
-vollständige Adresse sind selbst schon aussagekräftig; deshalb muss der verwendete Chat privat sein.
-Nur die fest gespeicherte Chat-ID zusammen mit der fest gespeicherten Telegram-Benutzer-ID darf
-entscheiden.
+Telegram ist ein externer Cloud-Dienst. Es geht dorthin, woran eine wartende Freigabe zu erkennen
+ist — Dokumentname, Quelle und Quellkennung, Medientyp und Größe, Zweck, Ziel und vollständiger
+Empfänger, Anhangsnamen mit Größen sowie die Modellbewertung als Sensibilität, Konfidenz,
+Begründung und Grundlage. Bei einer Sendung kommen ein auf 1200 Zeichen begrenzter, sichtbar als
+gekürzt markierter Dokumentauszug sowie Betreff und Nachrichtentext im Wortlaut hinzu. Dieser
+Kontext ist nötig, weil das Dokument selbst gerade versandt werden soll; der Betreiber akzeptiert
+ihn ausdrücklich für den privaten, fest gebundenen Chat. Bei einer Zusammenfassung bleiben dagegen
+Auszug, Modellbegründung, Zusammenfassungstext und Restangaben-Stichproben im Browserportal. Ebenso
+gehen Quellenmerkmale, Originaldateien, Portal-/MCP-Tokens und Quell-URLs nie an Telegram.
+Dokumentnamen, Zweck, Anhangsnamen, Nachrichtentext, Auszug und Empfängeradresse sind selbst schon
+aussagekräftig; deshalb muss der verwendete Chat privat sein. Nur die fest gespeicherte Chat-ID
+zusammen mit der fest gespeicherten Telegram-Benutzer-ID darf entscheiden.
 
 Was hier nicht zu sehen ist, kann hier auch nicht freigegeben werden: Eine **Zusammenfassung**
 bekommt in Telegram nur „Ablehnen“, weil ihre Freigabe genau der Text ist, der nicht dorthin geht —
@@ -425,7 +424,7 @@ des Dokuments zu nennen.
 | 3 | Keine Rohdaten an Hermes | `core/egress.ts` baut jede Antwort feldweise nach Whitelist; der einzige Freitext ist eine lokal freigegebene Zusammenfassung, die dieselbe Prüfung passiert |
 | 4 | Nur opake Referenzen | `util/ids.ts` (CSPRNG), Auflösung ausschließlich über `ReferenceStore` |
 | 5 | Kennungen und Zugangsdaten bleiben lokal | `EgressGuard` prüft jede Ausgabe gegen registrierte Geheimnisse und, außerhalb einer freigegebenen Zusammenfassung, gegen Struktur­muster (URLs, Pfade, API-Routen) |
-| 6 | Nur lokal konfigurierte Ziele | `EgressTarget.deliver()` ignoriert `recipient`, außer die Instanz ist explizit mit `allowDynamicRecipient` konfiguriert; nur dort verlangt und verwendet `prepare_action` eine Adresse, stets unverkürzt gezeigt und einzeln freigegeben |
+| 6 | Nur lokal konfigurierte Ziele | `EgressTarget.deliver()` ignoriert `recipient`, außer die Instanz ist explizit mit `allowDynamicRecipient` konfiguriert; feste und dynamische Zieladressen werden in der Freigabeansicht unverkürzt gezeigt, nur beim dynamischen Ziel verlangt und verwendet `prepare_action` eine Adresse und bindet sie einzeln an die Freigabe |
 | 7 | Jede Übertragung braucht eine lokale Freigabe | `Orchestrator.execute()` läuft ausschließlich aus `approveAction()`; `get_summary` gibt nur für `completed` einen Text heraus |
 | 8 | Das lokale Modell kann nichts übertragen | der Judge liefert nur validiertes JSON; er hat keine Referenz auf ein Ziel, und sein einziger Text mit Egress-Bestimmung wartet auf eine Freigabe |
 | 9 | Bei Mehrdeutigkeit kein automatisches Handeln | `ambiguous` und ein außerhalb des Bereichs liegender Kandidat führen beide zu `selection_required` |
@@ -697,9 +696,9 @@ Konfiguration kommt. Für Fälle mit wechselndem Empfänger — das Musterbeispi
 - `list_targets` meldet für dieses Ziel `dynamic_recipient: true`.
 - `prepare_action` verlangt dafür einen `recipient`-Parameter mit einer plausiblen Adresse; bei
   jedem anderen Ziel wird ein angegebener `recipient` abgelehnt.
-- Die lokale Freigabeansicht zeigt die Adresse unverkürzt und optisch hervorgehoben, weil sie —
-  anders als bei einem fest konfigurierten Ziel — nicht aus der lokalen Konfiguration stammt,
-  sondern vom Agenten vorgeschlagen wurde.
+- Die lokale Freigabeansicht zeigt die Adresse wie bei einem festen Ziel unverkürzt. Sie hebt sie
+  zusätzlich optisch hervor, weil sie nicht aus der lokalen Konfiguration stammt, sondern vom
+  Agenten vorgeschlagen wurde.
 - Die Adresse steht im eingefrorenen Plan: Eine Freigabe gilt für genau diese Adresse, nicht für
   „irgendeine, die der Agent später nennt“. Eine andere Adresse ist eine andere Aktion.
 - Eine Adresse, die hier noch nie freigegeben wurde, wird eigens hervorgehoben und verlangt im

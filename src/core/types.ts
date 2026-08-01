@@ -197,10 +197,9 @@ export interface SendResourcePlan {
     kind: 'send_resource';
     targetId: string;
     /**
-     * Destination as shown locally. Masked (e.g. `c***@example.org`) for a
-     * fixed target; the full, unmasked address for a dynamic-recipient target,
-     * because the point there is that the user reads the exact address before
-     * approving.
+     * Full destination as shown locally. For a fixed target it comes from the
+     * local configuration; for a dynamic-recipient target it comes from the
+     * agent's proposal and must be read before approving.
      */
     recipientDisplay: string;
     /** Whether this action's target let the request name the recipient. */
@@ -444,8 +443,8 @@ export interface TargetDescriptor {
     /** What this target is for; Hermes may read this to pick sensibly. */
     purpose: string;
     /**
-     * Redacted destination for the approval view, or a placeholder note when
-     * the target is dynamic-recipient (there is nothing fixed to redact).
+     * Destination for the approval view: the full address, or a placeholder
+     * note when the target accepts a dynamic recipient.
      */
     recipientDisplay: string;
     /**

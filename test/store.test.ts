@@ -13,7 +13,7 @@ import {
 } from '../src/sources/paperlessSource.js';
 import { computeBindingHash, resourceStateHash } from '../src/core/orchestrator.js';
 import { stableHash } from '../src/util/hash.js';
-import { maskChatId, maskEmail } from '../src/targets/target.js';
+import { maskChatId } from '../src/targets/target.js';
 import type { ResourceRecord, SendResourcePlan, SummariseResourcePlan } from '../src/core/types.js';
 import { makeConfig, makeResource, TEST_SECRET_TOKEN } from './helpers.js';
 
@@ -434,12 +434,7 @@ describe('Paperless: Kandidaten nachladen', () => {
     });
 });
 
-describe('Maskierung der Ziele', () => {
-    it('maskiert eine E-Mail-Adresse', () => {
-        assert.equal(maskEmail('christian@example.org'), 'c********@example.org');
-        assert.equal(maskEmail('kaputt'), '***');
-    });
-
+describe('Maskierung der Chat-Kennung', () => {
     it('maskiert eine Chat-Kennung', () => {
         assert.equal(maskChatId('123456789'), '***789');
         assert.equal(maskChatId('12'), '***');

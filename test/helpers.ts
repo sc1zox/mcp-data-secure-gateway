@@ -120,7 +120,7 @@ export class FakeTarget implements EgressTarget {
             id: this.id,
             label: 'Private E-Mail',
             purpose: 'Versand an das eigene Postfach.',
-            recipientDisplay: 'i**@example.org',
+            recipientDisplay: 'ich@example.org',
             dynamicRecipient: false,
             supportsAttachments: true,
             maxAttachmentBytes: 1024 * 1024,

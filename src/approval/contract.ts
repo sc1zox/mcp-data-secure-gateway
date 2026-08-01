@@ -132,8 +132,9 @@ export interface ApiTargetSummary {
     id: string;
     label: string;
     /**
-     * Masked for a fixed target; the full address for a dynamic-recipient one,
-     * because there the whole point is that the user reads it before approving.
+     * Full address for both target kinds. A fixed target takes it from local
+     * configuration; a dynamic-recipient target takes it from the agent's
+     * proposal and can therefore also set `firstTimeRecipient`.
      */
     recipientDisplay: string;
     purpose: string;

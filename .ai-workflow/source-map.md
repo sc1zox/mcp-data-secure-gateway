@@ -44,7 +44,7 @@ Vertrauensseite:
 | `src/attachments/pdfOptimizer.ts` | 297 | PDF-Adapter: qpdf-Preflight und -Validierung, Ghostscript-Kandidaten | local-only |
 | `src/attachments/jpegOptimizer.ts` | 245 | JPEG-Adapter über Sharp/mozjpeg; Auto-Orientierung, sRGB, Metadatenentfernung | local-only |
 | `src/attachments/factory.ts` | 76 | Baut Pipeline und Adapter aus der Engine-Konfiguration | local-only |
-| `src/targets/target.ts` | 70 | `EgressTarget`-Schnittstelle, `deliver()` als einziger Zustellweg | boundary |
+| `src/targets/target.ts` | 56 | `EgressTarget`-Schnittstelle, `deliver()` als einziger Zustellweg | boundary |
 | `src/targets/registry.ts` | 64 | Registrierung der konfigurierten Ziele (Inv. 6) | boundary |
 | `src/targets/mailTarget.ts` | 132 | SMTP-Zustellung, Anhangsgrenzen, MIME-sichere Defaults | boundary |
 | `src/targets/telegramTarget.ts` | 162 | Telegram-Zustellung | boundary |
@@ -55,9 +55,9 @@ Vertrauensseite:
 | `src/store/recipientStore.ts` | 60 | Bereits freigegebene dynamische Empfänger, als Digest; speist `firstTimeRecipient` | local-only |
 | `src/store/auditLog.ts` | 178 | Entscheidungsprotokoll, append-only innerhalb eines Aufbewahrungsfensters (Inv. 14) | local-only |
 | `src/approval/server.ts` | 619 | Lokaler Freigabe-Server, ausschließlich Loopback | local-only |
-| `src/approval/contract.ts` | 507 | Importfreies Wire-Format zwischen Server und Oberfläche, von beiden TS-Projekten kompiliert | boundary |
+| `src/approval/contract.ts` | 508 | Importfreies Wire-Format zwischen Server und Oberfläche, von beiden TS-Projekten kompiliert | boundary |
 | `src/approval/settingsStore.ts` | 213 | Lokale 0600-Klartextkonfiguration des optionalen Telegram-Freigabekanals; API-Projektion ohne Bot-Token | local-only |
-| `src/approval/telegramApproval.ts` | 650 | Long-Polling-Benachrichtigung und gebundene Telegram-Entscheidungen ohne Originaldateien | local-only |
+| `src/approval/telegramApproval.ts` | 664 | Long-Polling-Benachrichtigung und gebundene Telegram-Entscheidungen ohne Originaldateien | local-only |
 | `src/util/boundedHttp.ts` | 103 | Begrenztes Lesen von JSON-HTTP-Antworten mit Abbruch, Zeit- und Größenlimit | local-only |
 | `src/util/hash.ts` | 43 | Stabile Hash-Hilfsfunktion (`stableHash`), vom Bindungs-Hash genutzt | local-only |
 | `src/util/ids.ts` | 38 | Erzeugung opaker Referenzen (Inv. 4) | boundary |

@@ -329,6 +329,8 @@ const INITIAL_BACKOFF_MS = 2000;
 const MAX_BACKOFF_MS = 60_000;
 /** Headroom under Telegram's 4096-character message limit for the numbering header. */
 const TELEGRAM_MESSAGE_LIMIT = 3900;
+/** Upper bound for a document excerpt in this channel; the portal shows the whole thing. */
+const TELEGRAM_EXCERPT_LIMIT = 1200;
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
@@ -347,17 +349,17 @@ function renderChunks(view: LocalActionView): string[] {
 /**
  * Renders the notification.
  *
- * Telegram is an external cloud service, so this channel carries metadata, the
- * local model's verdict and — for a send — the outgoing message text itself,
- * but never anything derived from the private documents. The distinction is the
- * origin of the characters, not who is about to receive them: a subject and a
- * body are either composed here from the purpose and the safe label, or written
- * by the cloud agent, which already holds them. A document excerpt, a source
- * attribute, the model's reasoning, the text of a summary and the residual
- * samples are read out of the document, so they stay in the browser portal.
+ * For a send, this channel carries the model's reasoning and a capped document
+ * excerpt in addition to metadata and the outgoing message text. The document
+ * itself is about to leave, and this context is needed for the decision; the
+ * operator explicitly accepted it for the private, fixed chat (US-003 section 1).
+ * A summary remains narrower: no excerpt, reasoning, summary text or residual
+ * samples leave the machine because document-derived text is exactly what that
+ * approval protects.
  *
- * Attachments are the documents, so they are named, typed and hashed here and
- * never carried.
+ * Source URLs, source attributes, original files, portal tokens and MCP tokens
+ * remain outside this channel. Attachments are named and typed here, never
+ * carried as files.
  */
 function renderFullText(view: LocalActionView): string {
     const lines: string[] = [];
@@ -386,6 +388,12 @@ function renderFullText(view: LocalActionView): string {
             lines.push(
                 `   Inhaltsgrundlage: ${basisLabel(resource.judgement.basis.kind)}, ${resource.judgement.basis.textChars} Zeichen, Inhalt geprüft: ${resource.judgement.basis.contentChecked ? 'ja' : 'nein'}`
             );
+        }
+        if (view.kind === 'send_resource') {
+            lines.push(`   Begründung: ${resource.judgement.reasoning}`);
+            if (resource.excerpt) {
+                lines.push(`   Auszug: ${clampExcerpt(resource.excerpt)}`);
+            }
         }
     });
     lines.push('');
@@ -435,7 +443,7 @@ function renderFullText(view: LocalActionView): string {
     lines.push('');
     lines.push(
         mayApproveHere(view)
-            ? 'Betreff und Text stehen oben vollständig. Der Inhalt der Anhänge ist nur im Portal zu sehen.'
+            ? 'Betreff und Text stehen oben vollständig. Ein Auszug kann gekürzt sein; der Inhalt der Anhänge ist nur im Portal zu sehen.'
             : 'Freigabe nur im Portal: der Text der Zusammenfassung wird hier nicht angezeigt. Ablehnen ist hier möglich.'
     );
     lines.push(`Aktion: ${view.actionId}`);
@@ -474,6 +482,12 @@ function residualKinds(residuals: ResidualFinding[]): string {
 
 function basisLabel(kind: 'fulltext' | 'excerpt' | 'none'): string {
     return { fulltext: 'Volltext', excerpt: 'Auszug', none: 'nur Metadaten' }[kind];
+}
+
+function clampExcerpt(excerpt: string): string {
+    return excerpt.length <= TELEGRAM_EXCERPT_LIMIT
+        ? excerpt
+        : `${excerpt.slice(0, TELEGRAM_EXCERPT_LIMIT)} … (gekürzt, vollständig im Portal)`;
 }
 
 /**
